@@ -12,6 +12,7 @@ from omnirag.providers.embeddings.cohere import CohereEmbeddings
 from omnirag.providers.embeddings.gemini import GeminiEmbeddings
 from omnirag.providers.embeddings.hashing import HashingEmbeddings
 from omnirag.providers.embeddings.openai_compat import OpenAICompatibleEmbeddings
+from omnirag.providers.embeddings.resilient import ResilientEmbeddings
 from omnirag.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -48,15 +49,16 @@ def build_embedding_provider(cfg: EmbeddingSettings) -> BaseEmbeddingProvider:
     )
 
     if provider in ("openai", "openai_compatible"):
-        return OpenAICompatibleEmbeddings(**common)
+        primary = OpenAICompatibleEmbeddings(**common)
+        return ResilientEmbeddings(primary)
     if provider == "gemini":
-        return GeminiEmbeddings(**common)
+        return ResilientEmbeddings(GeminiEmbeddings(**common))
     if provider == "cohere":
-        return CohereEmbeddings(**common)
+        return ResilientEmbeddings(CohereEmbeddings(**common))
     if provider == "jina":
         # Jina serves an OpenAI-compatible /embeddings endpoint.
         common["base_url"] = cfg.base_url or "https://api.jina.ai/v1"
-        return OpenAICompatibleEmbeddings(**common)
+        return ResilientEmbeddings(OpenAICompatibleEmbeddings(**common))
 
     raise ConfigurationError(
         f"Unknown EMBEDDING_PROVIDER={provider!r}",

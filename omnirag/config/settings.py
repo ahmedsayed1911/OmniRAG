@@ -382,6 +382,13 @@ def build_settings() -> AppSettings:
         elif emb_provider == "jina":
             emb_key = _get("JINA_API_KEY")
 
+    # An explicitly selected remote provider without credentials is a
+    # configuration availability problem, not a reason to make ingestion
+    # unusable. Select the existing offline provider so the UI also reports
+    # the reduced-quality mode accurately.
+    if emb_provider not in {"hash", "mock"} and not emb_key:
+        emb_provider = "hash"
+
     embedding = EmbeddingSettings(
         provider=emb_provider,
         api_key=emb_key,
@@ -639,7 +646,7 @@ def _default_embedding_model(provider: str) -> str:
     return {
         "openai": "text-embedding-3-large",
         "openai_compatible": "text-embedding-3-large",
-        "gemini": "text-embedding-004",
+        "gemini": "gemini-embedding-001",
         "cohere": "embed-multilingual-v3.0",
         "jina": "jina-embeddings-v3",
         "hash": "hash-1024",

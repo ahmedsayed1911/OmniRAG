@@ -13,6 +13,9 @@ from __future__ import annotations
 import pytest
 
 from omnirag.core.enums import BlockType, IngestionStatus, Role
+from omnirag.core.exceptions import ProviderUnavailableError
+from omnirag.providers.embeddings.base import BaseEmbeddingProvider
+from omnirag.providers.embeddings.resilient import ResilientEmbeddings
 from omnirag.rag.generation import AnswerGenerator
 from omnirag.services.chat_service import ChatRequest, ChatService
 from omnirag.services.ingestion_service import UploadedFile
@@ -76,6 +79,29 @@ class TestFullPipeline:
         assert cited.filename == "report.pdf"
         assert cited.page_number in (1, 2)
         assert cited.page_label.startswith("Page")
+
+    def test_document_ingestion_completes_with_runtime_hash_fallback(
+        self, engine, ingestion_service, session_id, sample_pdf
+    ):
+        class UnavailableEmbeddings(BaseEmbeddingProvider):
+            name = "gemini"
+
+            def __init__(self):
+                super().__init__(model="gemini-embedding-001")
+
+            def embed_batch(self, texts, *, is_query=False):
+                raise ProviderUnavailableError("mock 503", provider="gemini")
+
+        engine._embeddings = ResilientEmbeddings(UnavailableEmbeddings())
+
+        result = ingestion_service.ingest(
+            session_id, UploadedFile(name="fallback.pdf", data=sample_pdf)
+        )
+
+        assert result.status == IngestionStatus.READY
+        assert result.chunk_count > 0
+        assert engine.embeddings.fallback_active
+        assert any("offline hash embeddings" in warning for warning in result.warnings)
 
     def test_pptx_answer_cites_slide_numbers(
         self, service, wired, session_id, sample_pptx, recording_llm

@@ -376,7 +376,7 @@ Other vendors (`openai`, `anthropic`, any OpenAI-compatible gateway via
 | `LLM_RETRY_ATTEMPTS` | `2` | Quick retries before failing over |
 | `MAX_IMAGES_PER_ANSWER` | `4` | Visual budget per answer |
 | `EMBEDDING_PROVIDER` | auto | `openai` \| `gemini` \| `cohere` \| `jina` \| `hash` |
-| `EMBEDDING_API_KEY` / `EMBEDDING_MODEL` | auto | Embedding credentials |
+| `EMBEDDING_API_KEY` / `EMBEDDING_MODEL` | auto / `gemini-embedding-001` with Gemini | Optional dedicated embedding credentials/model; `GEMINI_API_KEY` is reused for Gemini |
 | `QDRANT_URL` / `QDRANT_API_KEY` | — | Vector database (empty = in-memory) |
 | `QDRANT_COLLECTION` | `omnirag_chunks` | Collection name |
 | `RERANK_PROVIDER` | `auto` | `cohere` \| `jina` \| `llm` \| `heuristic` \| `none` |

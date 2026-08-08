@@ -148,3 +148,12 @@ class TestEmbeddingIndependence:
 
         assert settings.embedding.provider == "hash"
         assert any("hash" in w for w in settings.warnings())
+
+    def test_explicit_remote_embedding_provider_without_any_key_uses_hash(self, monkeypatch):
+        monkeypatch.setenv("EMBEDDING_PROVIDER", "gemini")
+
+        settings = build_settings()
+
+        assert settings.embedding.provider == "hash"
+        assert settings.embedding.model == "hash-1024"
+        assert any("hash" in warning for warning in settings.warnings())

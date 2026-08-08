@@ -45,16 +45,18 @@ class HashingEmbeddings(BaseEmbeddingProvider):
         batch_size: int = 256,
         max_chars: int = 8000,
         use_char_ngrams: bool = True,
+        announce: bool = True,
         **_ignored: object,
     ):
         super().__init__(model=model, batch_size=batch_size, max_chars=max_chars)
         self.dimensions = dimensions or DEFAULT_DIMENSIONS
         self.use_char_ngrams = use_char_ngrams
-        logger.warning(
-            "Using the offline `hash` embedding provider — retrieval is lexical "
-            "only and cross-lingual search will not work. Configure a real "
-            "embedding provider for production."
-        )
+        if announce:
+            logger.warning(
+                "Using the offline `hash` embedding provider — retrieval is lexical "
+                "only and cross-lingual search will not work. Configure a real "
+                "embedding provider for production."
+            )
 
     def embed_batch(self, texts: Sequence[str], *, is_query: bool = False) -> List[Vector]:
         return [self._embed_one(text) for text in texts]

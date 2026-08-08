@@ -21,7 +21,7 @@ from omnirag.utils.retry import retry_call
 logger = get_logger(__name__)
 
 DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
-DEFAULT_MODEL = "text-embedding-004"
+DEFAULT_MODEL = "gemini-embedding-001"
 # Gemini caps batchEmbedContents at 100 requests per call.
 MAX_BATCH = 100
 

@@ -193,6 +193,13 @@ class IngestionService:
             self.engine.registry.update(summary)
 
             embedded = self.engine.embedding_pipeline.embed_chunks(chunks)
+            embeddings = self.engine.embeddings
+            if getattr(embeddings, "fallback_active", False):
+                ctx.warn(
+                    "The configured embedding service was unavailable, so this "
+                    "document uses offline hash embeddings. Search remains "
+                    "available, but semantic and cross-lingual quality is reduced."
+                )
             if not embedded.chunks:
                 raise EmbeddingError(
                     "No chunk could be embedded",
