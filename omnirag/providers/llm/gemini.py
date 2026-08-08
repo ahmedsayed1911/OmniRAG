@@ -69,9 +69,15 @@ class GeminiLLM(BaseLLMProvider):
         target_model = model or (self.vision_model if has_images else self.model)
 
         generation_config: Dict[str, Any] = {
-            "temperature": self.temperature if temperature is None else temperature,
             "maxOutputTokens": max_output_tokens or self.max_output_tokens,
         }
+        # Gemini 3.5/3.6 removed the legacy sampling knobs from the current API
+        # contract. Sending temperature makes an otherwise valid model request
+        # fail immediately with HTTP 400.
+        if not target_model.startswith(("gemini-3.5-", "gemini-3.6-")):
+            generation_config["temperature"] = (
+                self.temperature if temperature is None else temperature
+            )
         if json_mode:
             generation_config["responseMimeType"] = "application/json"
 

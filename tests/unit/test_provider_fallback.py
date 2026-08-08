@@ -423,11 +423,13 @@ class TestHTTPClassification:
     @pytest.fixture(autouse=True)
     def _patch_client(self, monkeypatch):
         self.responses = []
+        self.requests = []
 
         class FakeClient:
             is_closed = False
 
             def post(_self, url, json=None, headers=None):
+                self.requests.append({"url": url, "json": json})
                 if not self.responses:
                     raise AssertionError("unexpected extra HTTP call")
                 item = self.responses.pop(0)
@@ -498,6 +500,10 @@ class TestHTTPClassification:
 
         assert response.text == "Hello"
         assert response.provider == "gemini"
+        assert self.requests[0]["url"].endswith(
+            "/models/gemini-3.6-flash:generateContent"
+        )
+        assert "temperature" not in self.requests[0]["json"]["generationConfig"]
 
     def test_openrouter_content_filter_becomes_a_policy_error(self):
         self.responses = [
