@@ -1,0 +1,33 @@
+# OmniRAG — runtime dependencies
+# Every package here ships manylinux wheels and needs no apt packages, so the
+# repository deploys to Streamlit Community Cloud as-is.
+
+# --- UI ---------------------------------------------------------------------
+streamlit>=1.40,<2.0
+
+# --- Core / models ----------------------------------------------------------
+pydantic>=2.7,<3.0
+
+# --- Document parsing (lightweight, runs locally) ---------------------------
+PyMuPDF>=1.24,<2.0          # PDF text, layout, images, page rendering
+python-docx>=1.1,<2.0       # DOCX paragraphs, tables, embedded media
+python-pptx>=0.6.23,<2.0    # PPTX slides, tables, pictures, speaker notes
+pillow>=10.3,<12.0          # image decode/normalise/crop
+
+# --- Vector store -----------------------------------------------------------
+qdrant-client>=1.9,<2.0     # Qdrant Cloud / self-hosted / local
+
+# --- HTTP client for all external providers ---------------------------------
+httpx>=0.27,<1.0
+
+# --- Numerics (in-memory vector fallback, evaluation metrics) ---------------
+numpy>=1.26,<3.0
+
+# ---------------------------------------------------------------------------
+# Optional extras — NOT installed by default.
+#
+#   pytesseract>=0.3.10     local OCR; also needs the tesseract binary plus
+#                           `tesseract-ocr-ara` / `tesseract-ocr-eng` via
+#                           packages.txt on Streamlit Cloud. The default OCR
+#                           path is the vision API, which needs no system deps.
+# ---------------------------------------------------------------------------

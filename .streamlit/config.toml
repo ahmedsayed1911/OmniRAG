@@ -1,0 +1,29 @@
+# Streamlit configuration committed to the repository.
+# Secrets belong in .streamlit/secrets.toml, which is git-ignored.
+
+[theme]
+base = "light"
+primaryColor = "#6366f1"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f6f7fb"
+textColor = "#12131a"
+font = "sans serif"
+
+[server]
+# Must be >= MAX_UPLOAD_MB so Streamlit does not reject a file before OmniRAG
+# can produce a friendly error message.
+maxUploadSize = 60
+# XSRF protection requires CORS to stay enabled, so `enableCORS` is left at its
+# default of true — setting it to false here would be silently overridden.
+enableXsrfProtection = true
+
+[browser]
+gatherUsageStats = false
+
+[client]
+# Never leak a Python traceback into the browser; errors are logged instead.
+showErrorDetails = false
+toolbarMode = "minimal"
+
+[logger]
+level = "info"

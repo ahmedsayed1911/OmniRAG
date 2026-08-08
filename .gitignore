@@ -1,0 +1,94 @@
+# ---------------------------------------------------------------------------
+# Secrets — never commit these
+# ---------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+secrets.toml
+*.pem
+*.key
+credentials.json
+service-account*.json
+
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+.conda/
+
+# ---------------------------------------------------------------------------
+# Testing / tooling
+# ---------------------------------------------------------------------------
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.tox/
+.hypothesis/
+
+# ---------------------------------------------------------------------------
+# OmniRAG runtime artifacts — user data, never committed
+# ---------------------------------------------------------------------------
+omnirag_workspace/
+.omnirag/
+uploads/
+data/uploads/
+tmp/
+temp/
+runtime/
+cache/
+*.tmp
+*.sqlite3
+
+# Vector database dumps / local storage
+qdrant_storage/
+*.qdrant
+/storage/
+snapshots/
+
+# Model weights and downloaded datasets
+models/
+*.bin
+*.onnx
+*.pt
+*.pth
+*.gguf
+*.safetensors
+data/raw/
+datasets/
+
+# ---------------------------------------------------------------------------
+# Editors / OS
+# ---------------------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---------------------------------------------------------------------------
+# Logs
+# ---------------------------------------------------------------------------
+*.log
+logs/
