@@ -335,10 +335,10 @@ FALLBACK_LLM_PROVIDER=openrouter
 ENABLE_PROVIDER_FALLBACK=true
 
 GEMINI_API_KEY=...              # https://aistudio.google.com/apikey
-GEMINI_MODEL=gemini-2.0-flash
+GEMINI_MODEL=gemini-3.6-flash
 
 OPENROUTER_API_KEY=...          # https://openrouter.ai/keys
-OPENROUTER_MODEL=google/gemini-2.0-flash-001
+OPENROUTER_MODEL=google/gemini-3.6-flash
 ```
 
 **All four configurations work:**
@@ -367,8 +367,8 @@ Other vendors (`openai`, `anthropic`, any OpenAI-compatible gateway via
 | `PRIMARY_LLM_PROVIDER` | `gemini` | First provider in the chain |
 | `FALLBACK_LLM_PROVIDER` | `openrouter` | Provider used on recoverable failures |
 | `ENABLE_PROVIDER_FALLBACK` | `true` | Master switch for failover |
-| `GEMINI_API_KEY` / `GEMINI_MODEL` | — / `gemini-2.0-flash` | Primary credentials |
-| `OPENROUTER_API_KEY` / `OPENROUTER_MODEL` | — / `google/gemini-2.0-flash-001` | Fallback credentials |
+| `GEMINI_API_KEY` / `GEMINI_MODEL` | — / `gemini-3.6-flash` | Primary credentials |
+| `OPENROUTER_API_KEY` / `OPENROUTER_MODEL` | — / `google/gemini-3.6-flash` | Fallback credentials |
 | `VISION_MODEL` | = LLM model | Model used for visual analysis |
 | `LLM_TEMPERATURE` | `0.1` | Generation temperature |
 | `LLM_MAX_OUTPUT_TOKENS` | `1400` | Answer length cap |
@@ -534,10 +534,10 @@ FALLBACK_LLM_PROVIDER = "openrouter"
 ENABLE_PROVIDER_FALLBACK = "true"
 
 GEMINI_API_KEY = "your-gemini-key"
-GEMINI_MODEL = "gemini-2.0-flash"
+GEMINI_MODEL = "gemini-3.6-flash"
 
 OPENROUTER_API_KEY = "your-openrouter-key"
-OPENROUTER_MODEL = "google/gemini-2.0-flash-001"
+OPENROUTER_MODEL = "google/gemini-3.6-flash"
 
 QDRANT_URL = "https://xxxxxxxx.eu-central.aws.cloud.qdrant.io:6333"
 QDRANT_API_KEY = "your-qdrant-key"
@@ -549,7 +549,7 @@ Sectioned TOML works too:
 ```toml
 [llm]
 api_key = "..."
-model = "gemini-2.0-flash"
+model = "gemini-3.6-flash"
 
 [qdrant]
 url = "..."

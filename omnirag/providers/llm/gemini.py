@@ -15,7 +15,7 @@ from omnirag.utils.retry import retry_call
 logger = get_logger(__name__)
 
 DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
-DEFAULT_MODEL = "gemini-2.0-flash"
+DEFAULT_MODEL = "gemini-3.6-flash"
 
 #: Gemini finish reasons that are deliberate refusals, not transient faults.
 POLICY_FINISH_REASONS = {"SAFETY", "PROHIBITED_CONTENT", "BLOCKLIST", "SPII"}
@@ -91,7 +91,7 @@ class GeminiLLM(BaseLLMProvider):
                 capability="images",
                 user_message=(
                     f"The configured Gemini model `{target_model}` cannot read images. "
-                    "Set `GEMINI_MODEL` to a multimodal model such as `gemini-2.0-flash`."
+                    "Set `GEMINI_MODEL` to a multimodal model such as `gemini-3.6-flash`."
                 ),
             )
 

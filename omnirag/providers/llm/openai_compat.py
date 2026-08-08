@@ -20,7 +20,7 @@ from omnirag.core.exceptions import (
     ProviderUnavailableError,
     RateLimitError,
 )
-from omnirag.providers.http import is_quota_exhausted, post_json
+from omnirag.providers.http import attach_http_context, is_quota_exhausted, post_json
 from omnirag.providers.llm.base import BaseLLMProvider, LLMMessage, LLMResponse
 from omnirag.utils.images import to_data_url
 from omnirag.utils.logging import get_logger
@@ -200,23 +200,27 @@ def raise_gateway_error(error: Dict[str, Any], *, provider: str) -> None:
         status = 0
 
     if status == 429 or "rate limit" in message.lower():
-        raise RateLimitError(
+        raise attach_http_context(RateLimitError(
             f"{provider} rate limited: {message}",
             provider=provider,
             quota_exhausted=is_quota_exhausted(message),
-        )
+        ), status or 429, message)
     if status in (408, 504) or "timeout" in message.lower():
-        raise ProviderTimeoutError(f"{provider} timeout: {message}", provider=provider)
-    if status >= 500:
-        raise ProviderUnavailableError(
-            f"{provider} upstream error {status}: {message}", provider=provider
+        raise attach_http_context(
+            ProviderTimeoutError(f"{provider} timeout: {message}", provider=provider),
+            status,
+            message,
         )
+    if status >= 500:
+        raise attach_http_context(ProviderUnavailableError(
+            f"{provider} upstream error {status}: {message}", provider=provider
+        ), status, message)
     if status in (401, 403):
-        raise ProviderAuthError(
+        raise attach_http_context(ProviderAuthError(
             f"{provider} auth error: {message}",
             provider=provider,
             user_message=f"The {provider} API rejected your credentials.",
-        )
-    raise ProviderBadRequestError(
+        ), status, message)
+    raise attach_http_context(ProviderBadRequestError(
         f"{provider} returned an error: {message}", provider=provider
-    )
+    ), status, message)

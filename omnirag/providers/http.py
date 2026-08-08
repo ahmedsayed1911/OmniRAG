@@ -95,53 +95,65 @@ def _handle_response(response: Any, *, provider: str) -> Dict[str, Any]:
         try:
             return response.json()
         except Exception as exc:
-            raise ProviderError(
+            error = ProviderError(
                 f"{provider} returned a non-JSON body",
                 provider=provider,
                 user_message=f"The {provider} API returned an unexpected response.",
-            ) from exc
+            )
+            raise attach_http_context(error, status, "<non-JSON response>") from exc
 
     body = _safe_body(response)
 
     if status == 429:
         retry_after = response.headers.get("retry-after")
-        raise RateLimitError(
+        raise attach_http_context(RateLimitError(
             f"{provider} rate limited: {body}",
             provider=provider,
             retry_after=float(retry_after) if _is_number(retry_after) else None,
             quota_exhausted=is_quota_exhausted(body),
-        )
+        ), status, body)
     if status in (408, 504):
-        raise ProviderTimeoutError(f"{provider} timeout ({status}): {body}", provider=provider)
+        raise attach_http_context(
+            ProviderTimeoutError(f"{provider} timeout ({status}): {body}", provider=provider),
+            status,
+            body,
+        )
     if status >= 500:
-        raise ProviderUnavailableError(
+        raise attach_http_context(ProviderUnavailableError(
             f"{provider} server error {status}: {body}",
             provider=provider,
             user_message=f"The {provider} service is temporarily unavailable ({status}).",
-        )
+        ), status, body)
     if status in (401, 403):
-        raise ProviderAuthError(
+        raise attach_http_context(ProviderAuthError(
             f"{provider} authentication failed ({status}): {body}",
             provider=provider,
             user_message=(
                 f"The {provider} API rejected your credentials. "
                 "Check the API key in your secrets."
             ),
-        )
+        ), status, body)
     if status == 404:
-        raise ProviderBadRequestError(
+        raise attach_http_context(ProviderBadRequestError(
             f"{provider} endpoint/model not found: {body}",
             provider=provider,
             user_message=(
                 f"The {provider} model or endpoint was not found. "
                 "Check the model name and base URL."
             ),
-        )
-    raise ProviderBadRequestError(
+        ), status, body)
+    raise attach_http_context(ProviderBadRequestError(
         f"{provider} request failed ({status}): {body}",
         provider=provider,
         user_message=f"The {provider} API rejected the request ({status}).",
-    )
+    ), status, body)
+
+
+def attach_http_context(exc: Exception, status: int, body: str) -> Exception:
+    """Attach bounded, credential-redacted-at-log-time HTTP diagnostics."""
+    setattr(exc, "status_code", int(status))
+    setattr(exc, "safe_body", " ".join((body or "").split())[:400])
+    return exc
 
 
 # Vendor-specific markers for "you are out of credit/quota" as opposed to

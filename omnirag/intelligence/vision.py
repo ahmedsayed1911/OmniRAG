@@ -28,6 +28,7 @@ from omnirag.core.enums import BlockType, Language
 from omnirag.core.exceptions import ProviderError
 from omnirag.core.models import VisualRef
 from omnirag.providers.llm.base import BaseLLMProvider, ImagePart, LLMMessage
+from omnirag.providers.llm.context import llm_operation
 from omnirag.utils.hashing import short_hash
 from omnirag.utils.images import (
     is_probably_blank,
@@ -211,18 +212,19 @@ class VisionAnalyzer:
 
         try:
             self.calls += 1
-            response = self.llm.complete(  # type: ignore[union-attr]
-                [
-                    LLMMessage(
-                        text=prompt,
-                        images=[ImagePart(data=prepared, media_type=media_type)],
-                    )
-                ],
-                system=SYSTEM_PROMPT,
-                temperature=0.0,
-                max_output_tokens=self.max_output_tokens,
-                json_mode=True,
-            )
+            with llm_operation("vision_analysis"):
+                response = self.llm.complete(  # type: ignore[union-attr]
+                    [
+                        LLMMessage(
+                            text=prompt,
+                            images=[ImagePart(data=prepared, media_type=media_type)],
+                        )
+                    ],
+                    system=SYSTEM_PROMPT,
+                    temperature=0.0,
+                    max_output_tokens=self.max_output_tokens,
+                    json_mode=True,
+                )
         except ProviderError as exc:
             logger.warning("Visual analysis failed: %s", exc)
             return VisualAnalysis.failed(exc.user_message)

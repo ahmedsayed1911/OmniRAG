@@ -23,7 +23,7 @@ from omnirag.utils.logging import get_logger
 logger = get_logger(__name__)
 
 DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
-DEFAULT_MODEL = "google/gemini-2.0-flash-001"
+DEFAULT_MODEL = "google/gemini-3.6-flash"
 
 #: Substrings of OpenRouter model slugs that are known to accept image input.
 #: Matching is conservative — an unknown model is treated as text-only so we
@@ -146,7 +146,7 @@ class OpenRouterLLM(OpenAICompatibleLLM):
                     f"The configured OpenRouter model `{target_model}` cannot read images, "
                     "so the visual evidence for this request could not be analysed. "
                     "Set `OPENROUTER_MODEL` to a vision-capable model "
-                    "(for example `google/gemini-2.0-flash-001` or `openai/gpt-4o-mini`)."
+                    "(for example `google/gemini-3.6-flash` or `openai/gpt-4o-mini`)."
                 ),
             )
 

@@ -28,6 +28,7 @@ from omnirag.core.enums import Language, Role
 from omnirag.core.exceptions import ProviderError
 from omnirag.core.models import ChatMessage
 from omnirag.providers.llm.base import BaseLLMProvider, LLMMessage
+from omnirag.providers.llm.context import llm_operation
 from omnirag.utils.language import detect_language, normalize_arabic
 from omnirag.utils.logging import get_logger
 from omnirag.utils.text import dedupe_preserve_order
@@ -198,13 +199,14 @@ def expand_with_llm(
         return plan
 
     try:
-        response = llm.complete(
-            [LLMMessage(role=Role.USER, text=f"Question: {plan.normalized}")],
-            system=SYSTEM_PROMPT,
-            temperature=0.0,
-            max_output_tokens=320,
-            json_mode=True,
-        )
+        with llm_operation("query_rewrite"):
+            response = llm.complete(
+                [LLMMessage(role=Role.USER, text=f"Question: {plan.normalized}")],
+                system=SYSTEM_PROMPT,
+                temperature=0.0,
+                max_output_tokens=320,
+                json_mode=True,
+            )
     except ProviderError as exc:
         logger.info("Query expansion skipped: %s", exc)
         plan.notes.append("Query expansion was unavailable for this question.")

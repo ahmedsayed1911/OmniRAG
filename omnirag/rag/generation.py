@@ -32,6 +32,7 @@ from omnirag.core.models import (
     SearchResult,
 )
 from omnirag.providers.llm.base import BaseLLMProvider, ImagePart, LLMMessage
+from omnirag.providers.llm.context import llm_operation
 from omnirag.rag.citations import build_citations, verify_and_clean
 from omnirag.rag.query_rewrite import QueryPlan
 from omnirag.storage.files import FileStore
@@ -119,12 +120,13 @@ class AnswerGenerator:
         started = time.perf_counter()
 
         try:
-            response = self.llm.complete(
-                messages,
-                system=self._system_prompt(request),
-                temperature=self.settings.llm.temperature,
-                max_output_tokens=self.settings.llm.max_output_tokens,
-            )
+            with llm_operation("final_answer"):
+                response = self.llm.complete(
+                    messages,
+                    system=self._system_prompt(request),
+                    temperature=self.settings.llm.temperature,
+                    max_output_tokens=self.settings.llm.max_output_tokens,
+                )
         except ProviderCapabilityError as exc:
             # The chain could not read the attached visuals. Rather than
             # silently answering without the evidence, retry text-only and say
@@ -132,12 +134,13 @@ class AnswerGenerator:
             logger.warning("Multimodal generation unavailable: %s", exc)
             if not images:
                 raise
-            response = self.llm.complete(
-                self._build_messages(request, context_text, []),
-                system=self._system_prompt(request),
-                temperature=self.settings.llm.temperature,
-                max_output_tokens=self.settings.llm.max_output_tokens,
-            )
+            with llm_operation("final_answer_text_only"):
+                response = self.llm.complete(
+                    self._build_messages(request, context_text, []),
+                    system=self._system_prompt(request),
+                    temperature=self.settings.llm.temperature,
+                    max_output_tokens=self.settings.llm.max_output_tokens,
+                )
             result = self._finish(response, citations, len(images))
             result.used_images = 0
             result.warnings.append(exc.user_message)

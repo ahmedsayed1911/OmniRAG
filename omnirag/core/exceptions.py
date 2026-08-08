@@ -208,19 +208,16 @@ class AllProvidersFailedError(ProviderError):
         detail = "; ".join(
             f"{name}: {type(exc).__name__}: {exc}" for name, exc in self.failures
         )
-        first_user_message = next(
-            (
-                getattr(exc, "user_message", "")
-                for _, exc in self.failures
-                if getattr(exc, "user_message", "")
-            ),
-            "",
-        )
+        safe_failures = [
+            f"{name}: {getattr(exc, 'user_message', '')}"
+            for name, exc in self.failures
+            if getattr(exc, "user_message", "")
+        ]
         super().__init__(
             detail or "no providers attempted",
             user_message=(
-                f"All configured AI providers failed. {first_user_message}".strip()
-                if first_user_message
+                "All configured AI providers failed. " + " ".join(safe_failures)
+                if safe_failures
                 else self.default_user_message
             ),
             retryable=False,

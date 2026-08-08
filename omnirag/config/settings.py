@@ -115,7 +115,7 @@ class LLMSettings:
     provider: str = "gemini"
     api_key: str = ""
     base_url: str = ""
-    model: str = "gemini-2.0-flash"
+    model: str = "gemini-3.6-flash"
     vision_model: str = ""
     temperature: float = 0.1
     max_output_tokens: int = 1400
@@ -635,9 +635,9 @@ def _default_model(provider: str) -> str:
         "openai": "gpt-4o-mini",
         "openai_compatible": "gpt-4o-mini",
         "anthropic": "claude-sonnet-4-5",
-        "gemini": "gemini-2.0-flash",
+        "gemini": "gemini-3.6-flash",
         # A multimodal default so visual evidence works out of the box.
-        "openrouter": "google/gemini-2.0-flash-001",
+        "openrouter": "google/gemini-3.6-flash",
         "mock": "mock-llm",
     }.get(provider, "gpt-4o-mini")
 

@@ -32,8 +32,12 @@ from omnirag.core.exceptions import (
 from omnirag.providers.errors import FailureClass, classify, should_failover
 from omnirag.providers.llm.base import BaseLLMProvider, ImagePart, LLMMessage, LLMResponse
 from omnirag.providers.llm.factory import build_llm_provider
-from omnirag.providers.llm.gemini import GeminiLLM
-from omnirag.providers.llm.openrouter import OpenRouterLLM, model_supports_images
+from omnirag.providers.llm.gemini import DEFAULT_MODEL as GEMINI_DEFAULT_MODEL, GeminiLLM
+from omnirag.providers.llm.openrouter import (
+    DEFAULT_MODEL as OPENROUTER_DEFAULT_MODEL,
+    OpenRouterLLM,
+    model_supports_images,
+)
 from omnirag.providers.llm.router import FallbackLLMProvider
 
 
@@ -221,6 +225,24 @@ class TestRouterFailover:
         assert set(failures) == {"gemini", "openrouter"}
         assert excinfo.value.user_message
 
+    def test_nonrecoverable_fallback_failure_preserves_primary_failure(self):
+        primary_error = ProviderUnavailableError("503", provider="gemini")
+        fallback_error = ProviderBadRequestError("404 model", provider="openrouter")
+        router = FallbackLLMProvider([
+            ScriptedProvider("gemini", outcomes=[primary_error]),
+            ScriptedProvider("openrouter", outcomes=[fallback_error]),
+        ])
+
+        with pytest.raises(AllProvidersFailedError) as excinfo:
+            router.complete(message())
+
+        assert excinfo.value.failures == [
+            ("gemini", primary_error),
+            ("openrouter", fallback_error),
+        ]
+        assert "gemini:" in excinfo.value.user_message
+        assert "openrouter:" in excinfo.value.user_message
+
     def test_fallback_can_be_disabled(self):
         gemini = ScriptedProvider("gemini", outcomes=[RateLimitError("429", provider="gemini")])
         openrouter = ScriptedProvider("openrouter", outcomes=["fallback"])
@@ -269,7 +291,7 @@ class TestMultimodalCapability:
     @pytest.mark.parametrize(
         "model,expected",
         [
-            ("google/gemini-2.0-flash-001", True),
+            ("google/gemini-3.6-flash", True),
             ("openai/gpt-4o-mini", True),
             ("anthropic/claude-sonnet-4.5", True),
             ("mistralai/pixtral-12b", True),
@@ -362,6 +384,21 @@ class TestConfigurationCombinations:
         assert chain["gemini"] == "gemini-2.5-pro"
         assert chain["openrouter"] == "openai/gpt-4o"
 
+    def test_current_default_model_identifiers(self, monkeypatch):
+        settings = configure(
+            monkeypatch,
+            GEMINI_API_KEY="g",
+            OPENROUTER_API_KEY="o",
+        )
+        chain = {e.provider: e.model for e in settings.llm.configured_endpoints}
+
+        assert GEMINI_DEFAULT_MODEL == "gemini-3.6-flash"
+        assert OPENROUTER_DEFAULT_MODEL == "google/gemini-3.6-flash"
+        assert chain == {
+            "gemini": "gemini-3.6-flash",
+            "openrouter": "google/gemini-3.6-flash",
+        }
+
     def test_no_api_key_is_ever_hardcoded(self, monkeypatch):
         settings = configure(monkeypatch)
         for endpoint in settings.llm.endpoints:
@@ -404,33 +441,35 @@ class TestHTTPClassification:
 
     def test_429_becomes_a_rate_limit_error(self):
         self.responses = [FakeResponse(429, text="Too many requests")]
-        provider = GeminiLLM(api_key="k", model="gemini-2.0-flash", retry_attempts=1)
+        provider = GeminiLLM(api_key="k", model="gemini-3.6-flash", retry_attempts=1)
         with pytest.raises(RateLimitError) as excinfo:
             provider.complete(message())
         assert excinfo.value.quota_exhausted is False
 
     def test_429_with_resource_exhausted_marks_quota(self):
         self.responses = [FakeResponse(429, text='{"error":{"status":"RESOURCE_EXHAUSTED"}}')]
-        provider = GeminiLLM(api_key="k", model="gemini-2.0-flash", retry_attempts=1)
+        provider = GeminiLLM(api_key="k", model="gemini-3.6-flash", retry_attempts=1)
         with pytest.raises(RateLimitError) as excinfo:
             provider.complete(message())
         assert excinfo.value.quota_exhausted is True
 
     def test_401_becomes_an_auth_error(self):
         self.responses = [FakeResponse(401, text="API key not valid")]
-        provider = GeminiLLM(api_key="bad", model="gemini-2.0-flash", retry_attempts=1)
+        provider = GeminiLLM(api_key="bad", model="gemini-3.6-flash", retry_attempts=1)
         with pytest.raises(ProviderAuthError):
             provider.complete(message())
 
     def test_503_becomes_a_provider_unavailable_error(self):
         self.responses = [FakeResponse(503, text="model overloaded")]
-        provider = GeminiLLM(api_key="k", model="gemini-2.0-flash", retry_attempts=1)
-        with pytest.raises(ProviderUnavailableError):
+        provider = GeminiLLM(api_key="k", model="gemini-3.6-flash", retry_attempts=1)
+        with pytest.raises(ProviderUnavailableError) as excinfo:
             provider.complete(message())
+        assert excinfo.value.status_code == 503
+        assert excinfo.value.safe_body == "model overloaded"
 
     def test_timeout_becomes_a_provider_timeout_error(self):
         self.responses = [httpx.ReadTimeout("timed out")]
-        provider = GeminiLLM(api_key="k", model="gemini-2.0-flash", retry_attempts=1)
+        provider = GeminiLLM(api_key="k", model="gemini-3.6-flash", retry_attempts=1)
         with pytest.raises(ProviderTimeoutError):
             provider.complete(message())
 
@@ -438,7 +477,7 @@ class TestHTTPClassification:
         self.responses = [
             FakeResponse(200, {"promptFeedback": {"blockReason": "SAFETY"}, "candidates": []})
         ]
-        provider = GeminiLLM(api_key="k", model="gemini-2.0-flash", retry_attempts=1)
+        provider = GeminiLLM(api_key="k", model="gemini-3.6-flash", retry_attempts=1)
         with pytest.raises(ProviderPolicyError):
             provider.complete(message())
 
@@ -454,7 +493,7 @@ class TestHTTPClassification:
                 },
             )
         ]
-        provider = GeminiLLM(api_key="k", model="gemini-2.0-flash", retry_attempts=1)
+        provider = GeminiLLM(api_key="k", model="gemini-3.6-flash", retry_attempts=1)
         response = provider.complete(message())
 
         assert response.text == "Hello"
@@ -471,7 +510,7 @@ class TestHTTPClassification:
                 },
             )
         ]
-        provider = OpenRouterLLM(api_key="k", model="google/gemini-2.0-flash-001", retry_attempts=1)
+        provider = OpenRouterLLM(api_key="k", model="google/gemini-3.6-flash", retry_attempts=1)
         with pytest.raises(ProviderPolicyError):
             provider.complete(message())
 
@@ -479,9 +518,11 @@ class TestHTTPClassification:
         self.responses = [
             FakeResponse(200, {"error": {"code": 429, "message": "rate limit exceeded"}})
         ]
-        provider = OpenRouterLLM(api_key="k", model="google/gemini-2.0-flash-001", retry_attempts=1)
-        with pytest.raises(RateLimitError):
+        provider = OpenRouterLLM(api_key="k", model="google/gemini-3.6-flash", retry_attempts=1)
+        with pytest.raises(RateLimitError) as excinfo:
             provider.complete(message())
+        assert excinfo.value.status_code == 429
+        assert excinfo.value.safe_body == "rate limit exceeded"
 
 
 # --------------------------------------------------------------------------- #

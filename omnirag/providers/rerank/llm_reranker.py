@@ -15,6 +15,7 @@ from typing import Dict, List, Sequence
 from omnirag.core.enums import Role
 from omnirag.core.exceptions import ProviderError, RerankError
 from omnirag.providers.llm.base import BaseLLMProvider, LLMMessage
+from omnirag.providers.llm.context import llm_operation
 from omnirag.providers.rerank.base import BaseReranker, RerankCandidate, RerankScore
 from omnirag.utils.logging import get_logger
 from omnirag.utils.text import truncate
@@ -55,13 +56,14 @@ class LLMReranker(BaseReranker):
         prompt = "\n".join(prompt_parts)
 
         try:
-            response = self.llm.complete(
-                [LLMMessage(role=Role.USER, text=prompt)],
-                system=SYSTEM_PROMPT,
-                temperature=0.0,
-                max_output_tokens=900,
-                json_mode=True,
-            )
+            with llm_operation("rerank"):
+                response = self.llm.complete(
+                    [LLMMessage(role=Role.USER, text=prompt)],
+                    system=SYSTEM_PROMPT,
+                    temperature=0.0,
+                    max_output_tokens=900,
+                    json_mode=True,
+                )
         except ProviderError as exc:
             raise RerankError(
                 f"LLM reranking failed: {exc}", provider=self.name, retryable=False

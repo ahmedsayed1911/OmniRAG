@@ -10,15 +10,20 @@ No API keys, no network.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from omnirag.core.enums import BlockType, IngestionStatus, Role
 from omnirag.core.exceptions import ProviderUnavailableError
 from omnirag.providers.embeddings.base import BaseEmbeddingProvider
 from omnirag.providers.embeddings.resilient import ResilientEmbeddings
+from omnirag.providers.llm.base import BaseLLMProvider, LLMResponse
+from omnirag.providers.llm.context import current_llm_operation
+from omnirag.providers.llm.router import FallbackLLMProvider
 from omnirag.rag.generation import AnswerGenerator
 from omnirag.services.chat_service import ChatRequest, ChatService
-from omnirag.services.ingestion_service import UploadedFile
+from omnirag.services.ingestion_service import IngestionService, UploadedFile
 from omnirag.storage.sessions import new_session_id
 
 
@@ -102,6 +107,61 @@ class TestFullPipeline:
         assert result.chunk_count > 0
         assert engine.embeddings.fallback_active
         assert any("offline hash embeddings" in warning for warning in result.warnings)
+
+    def test_arabic_chat_uses_mocked_provider_chain_for_rewrite_and_final_answer(
+        self, engine, fake_embeddings, session_id, sample_markdown
+    ):
+        class UnavailablePrimary(BaseLLMProvider):
+            name = "gemini"
+            supports_vision = True
+
+            def __init__(self):
+                super().__init__(model="gemini-3.6-flash")
+
+            def complete(self, messages, **kwargs):
+                raise ProviderUnavailableError("mock 503", provider=self.name)
+
+        class OperationAwareFallback(BaseLLMProvider):
+            name = "openrouter"
+            supports_vision = True
+
+            def __init__(self):
+                super().__init__(model="google/gemini-3.6-flash")
+                self.operations = []
+
+            def complete(self, messages, **kwargs):
+                operation = current_llm_operation()
+                self.operations.append(operation)
+                if operation == "query_rewrite":
+                    text = '{"queries":["total revenue Q4 2024"]}'
+                else:
+                    text = "بلغت الإيرادات 8.4 مليون دولار في الربع الرابع [1]."
+                return LLMResponse(text=text, model=self.model, provider=self.name)
+
+        engine.settings = replace(
+            engine.settings,
+            retrieval=replace(engine.settings.retrieval, query_rewrite=True),
+        )
+        engine._embeddings = fake_embeddings
+        ingestion = IngestionService(engine)
+        uploaded = ingestion.ingest(
+            session_id, UploadedFile(name="annual.md", data=sample_markdown)
+        )
+        assert uploaded.status == IngestionStatus.READY
+
+        fallback = OperationAwareFallback()
+        engine._llm = FallbackLLMProvider([UnavailablePrimary(), fallback])
+        answer = ChatService(engine).answer(
+            ChatRequest(question="ما إجمالي الإيرادات في الربع الرابع؟", session_id=session_id)
+        )
+
+        assert answer.error is None
+        assert "8.4" in answer.content
+        assert answer.citations
+        assert fallback.operations == ["query_rewrite", "final_answer"]
+        attempts = answer.debug["provider_attempts"]
+        assert any("final_answer/gemini" in attempt for attempt in attempts)
+        assert any("final_answer/openrouter" in attempt for attempt in attempts)
 
     def test_pptx_answer_cites_slide_numbers(
         self, service, wired, session_id, sample_pptx, recording_llm

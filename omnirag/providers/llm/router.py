@@ -39,6 +39,7 @@ from omnirag.core.exceptions import (
 )
 from omnirag.providers.errors import FailureClass, classify, describe
 from omnirag.providers.llm.base import BaseLLMProvider, LLMMessage, LLMResponse
+from omnirag.providers.llm.context import current_llm_operation
 from omnirag.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -51,16 +52,17 @@ class ProviderAttempt:
     provider: str
     model: str
     outcome: str                      # ok | skipped | failed
+    operation: str = "unspecified"
     failure_class: Optional[str] = None
     error_type: Optional[str] = None
     duration_ms: float = 0.0
 
     def __str__(self) -> str:
         if self.outcome == "ok":
-            return f"{self.provider}: ok ({self.duration_ms:.0f} ms)"
+            return f"{self.operation}/{self.provider}: ok ({self.duration_ms:.0f} ms)"
         if self.outcome == "skipped":
-            return f"{self.provider}: skipped ({self.failure_class})"
-        return f"{self.provider}: {self.error_type} [{self.failure_class}]"
+            return f"{self.operation}/{self.provider}: skipped ({self.failure_class})"
+        return f"{self.operation}/{self.provider}: {self.error_type} [{self.failure_class}]"
 
 
 @dataclass
@@ -140,6 +142,7 @@ class FallbackLLMProvider(BaseLLMProvider):
         json_mode: bool = False,
     ) -> LLMResponse:
         needs_images = any(m.has_images for m in messages)
+        operation = current_llm_operation()
         attempts: List[ProviderAttempt] = []
         failures: List[tuple[str, BaseException]] = []
         capability_error: Optional[ProviderCapabilityError] = None
@@ -156,6 +159,7 @@ class FallbackLLMProvider(BaseLLMProvider):
                     ProviderAttempt(
                         provider=provider.name,
                         model=model or provider.model,
+                        operation=operation,
                         outcome="skipped",
                         failure_class=FailureClass.CAPABILITY.value,
                     )
@@ -176,10 +180,12 @@ class FallbackLLMProvider(BaseLLMProvider):
             started = time.perf_counter()
             role = "primary" if index == 0 else f"fallback #{index}"
             logger.info(
-                "%s request started (%s, model=%s%s)",
+                "LLM operation=%s provider=%s role=%s model=%s base_url=%s%s",
+                operation,
                 provider.name,
                 role,
                 model or provider.model,
+                getattr(provider, "base_url", "local"),
                 ", multimodal" if needs_images else "",
             )
             try:
@@ -198,6 +204,7 @@ class FallbackLLMProvider(BaseLLMProvider):
                     ProviderAttempt(
                         provider=provider.name,
                         model=model or provider.model,
+                        operation=operation,
                         outcome="failed",
                         failure_class=failure.value,
                         error_type=type(exc).__name__,
@@ -206,15 +213,36 @@ class FallbackLLMProvider(BaseLLMProvider):
                 )
                 failures.append((provider.name, exc))
 
+                logger.warning(
+                    "LLM operation=%s provider=%s model=%s status=%s "
+                    "classified_error=%s failure_class=%s body=%s",
+                    operation,
+                    provider.name,
+                    model or provider.model,
+                    getattr(exc, "status_code", "n/a"),
+                    type(exc).__name__,
+                    failure.value,
+                    getattr(exc, "safe_body", "<unavailable>"),
+                )
+
                 if failure is not FailureClass.RECOVERABLE:
                     # Bugs, bad keys, malformed requests and safety refusals are
                     # surfaced as-is: another vendor cannot fix them.
-                    logger.warning(
-                        "%s failed with a non-recoverable error (%s) — not failing over",
+                    if len(failures) == 1:
+                        logger.warning(
+                            "%s failed with a non-recoverable error (%s) — not failing over",
+                            provider.name,
+                            describe(exc),
+                        )
+                        raise
+                    # A fallback failure must not replace the primary failure.
+                    # Break so AllProvidersFailedError retains the complete trail.
+                    logger.error(
+                        "Fallback provider %s failed non-recoverably; preserving %d failures",
                         provider.name,
-                        describe(exc),
+                        len(failures),
                     )
-                    raise
+                    break
 
                 remaining = len(self.chain) - index - 1
                 logger.warning("%s failed: %s", provider.name, describe(exc))
@@ -231,6 +259,7 @@ class FallbackLLMProvider(BaseLLMProvider):
                 ProviderAttempt(
                     provider=provider.name,
                     model=response.model or provider.model,
+                    operation=operation,
                     outcome="ok",
                     duration_ms=elapsed,
                 )
