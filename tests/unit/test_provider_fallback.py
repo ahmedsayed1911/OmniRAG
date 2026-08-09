@@ -489,17 +489,28 @@ class TestHTTPClassification:
                 200,
                 {
                     "candidates": [
-                        {"content": {"parts": [{"text": "Hello"}]}, "finishReason": "STOP"}
+                        {
+                            "content": {
+                                "parts": [{"text": "Hello"}, {"text": " world"}]
+                            },
+                            "finishReason": "STOP",
+                        }
                     ],
-                    "usageMetadata": {"totalTokenCount": 12},
+                    "usageMetadata": {
+                        "promptTokenCount": 5,
+                        "candidatesTokenCount": 7,
+                        "totalTokenCount": 12,
+                    },
                 },
             )
         ]
         provider = GeminiLLM(api_key="k", model="gemini-3.6-flash", retry_attempts=1)
         response = provider.complete(message())
 
-        assert response.text == "Hello"
+        assert response.text == "Hello world"
         assert response.provider == "gemini"
+        assert response.finish_reason == "STOP"
+        assert response.usage["candidatesTokenCount"] == 7
         assert self.requests[0]["url"].endswith(
             "/models/gemini-3.6-flash:generateContent"
         )

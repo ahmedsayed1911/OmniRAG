@@ -31,14 +31,14 @@ from omnirag.core.models import (
     RetrievalResult,
     SearchResult,
 )
-from omnirag.providers.llm.base import BaseLLMProvider, ImagePart, LLMMessage
+from omnirag.providers.llm.base import BaseLLMProvider, ImagePart, LLMMessage, LLMResponse
 from omnirag.providers.llm.context import llm_operation
 from omnirag.rag.citations import build_citations, verify_and_clean
 from omnirag.rag.query_rewrite import QueryPlan
 from omnirag.storage.files import FileStore
 from omnirag.utils.language import language_name
 from omnirag.utils.logging import get_logger
-from omnirag.utils.text import truncate
+from omnirag.utils.text import estimate_tokens, truncate
 
 logger = get_logger(__name__)
 
@@ -80,6 +80,12 @@ STYLE
 - Do not describe your own process or mention "sources provided to me"."""
 
 MAX_CONTEXT_CHARS_PER_CHUNK = 3200
+OUTPUT_LIMIT_REASONS = frozenset({"MAX_TOKENS", "MAX_OUTPUT_TOKENS", "LENGTH"})
+CONTINUATION_PROMPT = """Continue exactly where your previous response stopped.
+Do not restart the answer and do not repeat any completed section or sentence.
+Use only the same numbered sources already supplied; do not add outside facts.
+Preserve the existing citation numbering and cite every continued factual item.
+Finish the remaining answer naturally and compactly."""
 
 
 @dataclass
@@ -117,7 +123,11 @@ class AnswerGenerator:
         images = self._collect_images(results, citations)
 
         messages = self._build_messages(request, context_text, images)
+        active_messages = messages
+        output_budget = self._output_budget(request)
+        input_token_estimate = sum(estimate_tokens(message.text) for message in messages)
         started = time.perf_counter()
+        generation_warnings: List[str] = []
 
         try:
             with llm_operation("final_answer"):
@@ -125,7 +135,7 @@ class AnswerGenerator:
                     messages,
                     system=self._system_prompt(request),
                     temperature=self.settings.llm.temperature,
-                    max_output_tokens=self.settings.llm.max_output_tokens,
+                    max_output_tokens=output_budget,
                 )
         except ProviderCapabilityError as exc:
             # The chain could not read the attached visuals. Rather than
@@ -134,30 +144,118 @@ class AnswerGenerator:
             logger.warning("Multimodal generation unavailable: %s", exc)
             if not images:
                 raise
+            active_messages = self._build_messages(request, context_text, [])
             with llm_operation("final_answer_text_only"):
                 response = self.llm.complete(
-                    self._build_messages(request, context_text, []),
+                    active_messages,
                     system=self._system_prompt(request),
                     temperature=self.settings.llm.temperature,
-                    max_output_tokens=self.settings.llm.max_output_tokens,
+                    max_output_tokens=output_budget,
                 )
-            result = self._finish(response, citations, len(images))
-            result.used_images = 0
-            result.warnings.append(exc.user_message)
-            return result
+            images = []
+            generation_warnings.append(exc.user_message)
+
+        response, continued, continuation_warnings = self._continue_once(
+            request, active_messages, response, output_budget
+        )
+        generation_warnings.extend(continuation_warnings)
 
         elapsed = (time.perf_counter() - started) * 1000
+        returned_tokens = _output_tokens(response)
         logger.info(
-            "Generated answer in %.0f ms (%d contexts, %d images, provider=%s)",
-            elapsed,
+            "Generation query_scope=%s context_chunks=%d input_token_estimate=%d "
+            "requested_max_output_tokens=%d provider=%s model=%s finish_reason=%s "
+            "returned_chars=%d returned_tokens=%d continued=%s generation_ms=%.0f",
+            request.plan.scope.value if request.plan else "FOCUSED",
             len(results),
-            len(images),
+            input_token_estimate,
+            output_budget,
             response.provider or self.llm.name,
+            response.model or self.llm.model,
+            response.finish_reason or "unspecified",
+            len(response.text),
+            returned_tokens,
+            continued,
+            elapsed,
         )
-        return self._finish(response, citations, len(images))
+        result = self._finish(response, citations, len(images), continued=continued)
+        result.warnings.extend(generation_warnings)
+        return result
+
+    def _output_budget(self, request: GenerationRequest) -> int:
+        base = max(1, self.settings.llm.max_output_tokens)
+        if request.plan and request.plan.scope in (
+            QueryScope.GLOBAL,
+            QueryScope.EXHAUSTIVE,
+            QueryScope.MULTI_PART,
+        ):
+            return max(base, self.settings.llm.exhaustive_max_output_tokens)
+        return base
+
+    def _continue_once(
+        self,
+        request: GenerationRequest,
+        messages: Sequence[LLMMessage],
+        response: LLMResponse,
+        output_budget: int,
+    ) -> tuple[LLMResponse, bool, List[str]]:
+        """Continue once only when the provider explicitly hit its token cap."""
+        if response.finish_reason.upper() not in OUTPUT_LIMIT_REASONS:
+            return response, False, []
+
+        continuation_messages = [
+            *messages,
+            LLMMessage(role=Role.ASSISTANT, text=response.text),
+            LLMMessage(role=Role.USER, text=CONTINUATION_PROMPT),
+        ]
+        try:
+            with llm_operation("final_answer_continuation"):
+                continuation = self.llm.complete(
+                    continuation_messages,
+                    system=self._system_prompt(request),
+                    temperature=self.settings.llm.temperature,
+                    max_output_tokens=output_budget,
+                )
+        except Exception as exc:  # noqa: BLE001 - retain the complete first portion
+            logger.warning(
+                "One-shot continuation failed safely: provider=%s error=%s",
+                getattr(self.llm, "name", "unknown"),
+                type(exc).__name__,
+            )
+            return response, False, [
+                "The model reached its output limit, and automatic continuation failed. "
+                "The complete generated portion is shown above."
+            ]
+
+        combined = _join_continuation(response.text, continuation.text)
+        usage = dict(response.usage or {})
+        usage["continuation"] = dict(continuation.usage or {})
+        combined_response = LLMResponse(
+            text=combined,
+            model=continuation.model or response.model,
+            finish_reason=continuation.finish_reason,
+            usage=usage,
+            provider=continuation.provider or response.provider,
+            fallback_used=response.fallback_used or continuation.fallback_used,
+            attempts=[*response.attempts, *continuation.attempts],
+        )
+        warnings = ["Response continued automatically because the model reached its output limit."]
+        if continuation.finish_reason.upper() in OUTPUT_LIMIT_REASONS:
+            warnings.append(
+                "The continued response also reached the provider output limit; no further "
+                "automatic continuation was attempted."
+            )
+        return combined_response, True, warnings
 
     # ------------------------------------------------------------------ #
-    def _finish(self, response, citations: List[Citation], image_count: int) -> AnswerResult:
+    def _finish(
+        self,
+        response: LLMResponse,
+        citations: List[Citation],
+        image_count: int,
+        *,
+        continued: bool = False,
+    ) -> AnswerResult:
         bundle = verify_and_clean(response.text, citations)
         answer = bundle.answer
         insufficient = INSUFFICIENT_MARKER in answer
@@ -184,6 +282,8 @@ class AnswerGenerator:
             used_images=image_count,
             usage=dict(response.usage or {}),
             warnings=warnings,
+            finish_reason=response.finish_reason,
+            continued=continued,
         )
 
     def _no_evidence_answer(self, request: GenerationRequest) -> AnswerResult:
@@ -224,6 +324,10 @@ COMPREHENSIVE MODE
 - Preserve links explicitly supported by evidence (for example test case -> actual result -> bug ID -> severity), but never invent a relationship.
 - Do not claim the list is complete unless the retrieval evidence supports that claim.
 - If evidence appears incomplete or ambiguous, state that limitation explicitly."""
+            prompt += """
+- Keep the overview concise, then use a compact structured list for exhaustive items.
+- Do not repeat document headings or background under every item.
+- Prefer: item/title; page; expected; actual; reason; linked bug/severity; citations."""
         target = request.answer_language or (
             request.plan.answer_language if request.plan else None
         )
@@ -383,6 +487,49 @@ def _recent_history(
         if m.content.strip() and m.error is None and m.role in (Role.USER, Role.ASSISTANT)
     ]
     return usable[-max(0, limit) :] if limit else []
+
+
+def _join_continuation(first: str, continuation: str) -> str:
+    """Join an exact continuation while removing a bounded repeated prefix."""
+    left = first
+    right = continuation
+    if not right:
+        return left
+    max_overlap = min(600, len(left), len(right))
+    overlap = next(
+        (size for size in range(max_overlap, 19, -1) if left[-size:] == right[:size]),
+        0,
+    )
+    if overlap:
+        right = right[overlap:]
+    # MAX_TOKENS frequently cuts inside a word. The continuation instruction
+    # asks for the exact remaining characters, so concatenate without inventing
+    # whitespace unless the provider begins a fresh Markdown block.
+    separator = (
+        "\n"
+        if right.startswith(("#", "- ", "* ", ">", "```"))
+        and not left.endswith(("\n", " "))
+        else ""
+    )
+    return f"{left}{separator}{right}"
+
+
+def _output_tokens(response: LLMResponse) -> int:
+    usage = response.usage or {}
+    keys = (
+        "candidatesTokenCount",
+        "output_tokens",
+        "completion_tokens",
+        "outputTokenCount",
+    )
+    total = next((int(usage[key]) for key in keys if usage.get(key) is not None), 0)
+    continuation = usage.get("continuation")
+    if isinstance(continuation, dict):
+        total += next(
+            (int(continuation[key]) for key in keys if continuation.get(key) is not None),
+            0,
+        )
+    return total or estimate_tokens(response.text)
 
 
 def build_generator(

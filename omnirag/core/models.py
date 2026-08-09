@@ -480,6 +480,8 @@ class AnswerResult(OmniModel):
     used_images: int = 0
     usage: Dict[str, Any] = Field(default_factory=dict)
     warnings: List[str] = Field(default_factory=list)
+    finish_reason: str = ""
+    continued: bool = False
 
 
 class IngestionResult(OmniModel):

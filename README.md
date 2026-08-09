@@ -371,7 +371,8 @@ Other vendors (`openai`, `anthropic`, any OpenAI-compatible gateway via
 | `OPENROUTER_API_KEY` / `OPENROUTER_MODEL` | — / `google/gemini-3.6-flash` | Fallback credentials |
 | `VISION_MODEL` | = LLM model | Model used for visual analysis |
 | `LLM_TEMPERATURE` | `0.1` | Generation temperature |
-| `LLM_MAX_OUTPUT_TOKENS` | `1400` | Answer length cap |
+| `LLM_MAX_OUTPUT_TOKENS` | `4096` | Focused-answer output budget |
+| `LLM_EXHAUSTIVE_MAX_OUTPUT_TOKENS` | `8192` | Global/exhaustive output budget |
 | `LLM_TIMEOUT_S` | `90` | Per-request timeout |
 | `LLM_RETRY_ATTEMPTS` | `2` | Quick retries before failing over |
 | `MAX_IMAGES_PER_ANSWER` | `4` | Visual budget per answer |

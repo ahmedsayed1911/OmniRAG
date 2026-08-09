@@ -13,6 +13,8 @@ from omnirag.core.models import (
     SearchResult,
     VisualRef,
 )
+from omnirag.core.exceptions import ProviderUnavailableError
+from omnirag.providers.llm.base import BaseLLMProvider, LLMResponse
 from omnirag.rag.generation import (
     INSUFFICIENT_MARKER,
     SYSTEM_PROMPT,
@@ -41,6 +43,23 @@ def retrieval(*chunks) -> RetrievalResult:
         query="q",
         results=[SearchResult(chunk=c, score=0.9 - i * 0.1) for i, c in enumerate(chunks)],
     )
+
+
+class FinishReasonLLM(BaseLLMProvider):
+    name = "gemini"
+    supports_vision = True
+
+    def __init__(self, outcomes):
+        super().__init__(model="gemini-3.6-flash")
+        self.outcomes = list(outcomes)
+        self.calls = []
+
+    def complete(self, messages, **kwargs):
+        self.calls.append({"messages": list(messages), **kwargs})
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
 
 
 @pytest.fixture
@@ -78,6 +97,132 @@ class TestPromptContract:
         assert "comprehensive coverage" in system.lower()
         assert "each reported item" in system.lower()
         assert "never invent a relationship" in system.lower()
+
+
+class TestOutputCompletion:
+    def _generate(self, settings, file_store, outcomes, *, question="List all failures"):
+        llm = FinishReasonLLM(outcomes)
+        generator = AnswerGenerator(llm, file_store=file_store, settings=settings)
+        plan = parse_query(question)
+        result = generator.generate(
+            GenerationRequest(
+                question=question,
+                retrieval=retrieval(chunk("TC03 failed because validation was absent.", page=2)),
+                session_id="s1",
+                plan=plan,
+            )
+        )
+        return result, llm
+
+    def test_normal_short_answer_is_unchanged(self, settings, file_store):
+        response = LLMResponse(
+            text="TC03 failed [1].",
+            model="gemini-3.6-flash",
+            provider="gemini",
+            finish_reason="STOP",
+            usage={"candidatesTokenCount": 8},
+        )
+        result, llm = self._generate(settings, file_store, [response])
+        assert result.answer == response.text
+        assert result.finish_reason == "STOP"
+        assert result.continued is False
+        assert len(llm.calls) == 1
+
+    def test_exhaustive_answer_uses_larger_configured_budget(
+        self, settings, file_store
+    ):
+        object.__setattr__(settings.llm, "max_output_tokens", 2048)
+        object.__setattr__(settings.llm, "exhaustive_max_output_tokens", 9000)
+        response = LLMResponse(text="Complete [1].", finish_reason="STOP")
+        _, llm = self._generate(settings, file_store, [response])
+        assert llm.calls[0]["max_output_tokens"] == 9000
+
+    @pytest.mark.parametrize(
+        "first,second,combined",
+        [
+            ("The failure rea", "son is timeout [1].", "The failure reason is timeout [1]."),
+            ("سبب الف", "شل هو انتهاء المهلة [1].", "سبب الفشل هو انتهاء المهلة [1]."),
+            ("TC03 — سبب الف", "شل: timeout [1].", "TC03 — سبب الفشل: timeout [1]."),
+        ],
+    )
+    def test_max_tokens_performs_one_exact_multilingual_continuation(
+        self, settings, file_store, first, second, combined
+    ):
+        outcomes = [
+            LLMResponse(
+                text=first,
+                finish_reason="MAX_TOKENS",
+                usage={"candidatesTokenCount": 100},
+            ),
+            LLMResponse(
+                text=second,
+                finish_reason="STOP",
+                usage={"candidatesTokenCount": 40},
+            ),
+        ]
+        result, llm = self._generate(settings, file_store, outcomes)
+        assert result.answer == combined
+        assert result.continued is True
+        assert result.finish_reason == "STOP"
+        assert len(llm.calls) == 2
+        continuation = llm.calls[1]["messages"][-1].text.lower()
+        assert "continue exactly" in continuation
+        assert "do not repeat" in continuation
+        assert "citation numbering" in continuation
+
+    def test_continuation_removes_repeated_overlap_and_keeps_citations(
+        self, settings, file_store
+    ):
+        first = "### TC03\nFailure detail repeated phrase"
+        second = "detail repeated phrase and completed [1]."
+        result, _ = self._generate(
+            settings,
+            file_store,
+            [
+                LLMResponse(text=first, finish_reason="MAX_TOKENS"),
+                LLMResponse(text=second, finish_reason="STOP"),
+            ],
+        )
+        assert result.answer.count("detail repeated phrase") == 1
+        assert result.citations and "[1]" in result.answer
+
+    def test_no_more_than_one_continuation(self, settings, file_store):
+        result, llm = self._generate(
+            settings,
+            file_store,
+            [
+                LLMResponse(text="Part one ", finish_reason="MAX_TOKENS"),
+                LLMResponse(text="part two [1]", finish_reason="MAX_TOKENS"),
+                LLMResponse(text="must not be called", finish_reason="STOP"),
+            ],
+        )
+        assert len(llm.calls) == 2
+        assert result.continued is True
+        assert any("no further" in warning.lower() for warning in result.warnings)
+
+    def test_continuation_failure_preserves_first_response(self, settings, file_store):
+        first = "Complete generated portion [1]."
+        result, llm = self._generate(
+            settings,
+            file_store,
+            [
+                LLMResponse(text=first, finish_reason="MAX_TOKENS"),
+                ProviderUnavailableError("mock outage", provider="gemini"),
+            ],
+        )
+        assert result.answer == first
+        assert result.continued is False
+        assert len(llm.calls) == 2
+        assert any("continuation failed" in warning.lower() for warning in result.warnings)
+
+    def test_stop_response_has_no_arbitrary_answer_slicing(self, settings, file_store):
+        long_answer = ("Complete sentence with evidence [1]. " * 500).strip()
+        result, _ = self._generate(
+            settings,
+            file_store,
+            [LLMResponse(text=long_answer, finish_reason="STOP")],
+        )
+        assert result.answer == long_answer
 
     def test_context_is_numbered_and_labelled(self, generator, recording_llm):
         recording_llm.responses = ["Revenue was 8.4M [1]."]

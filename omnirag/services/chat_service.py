@@ -28,6 +28,7 @@ from omnirag.rag.retrieval import RetrievalRequest, Retriever
 from omnirag.services.engine import OmniRAGEngine
 from omnirag.storage.sessions import require_session_id
 from omnirag.utils.logging import get_logger
+from omnirag.utils.text import estimate_tokens
 
 logger = get_logger(__name__)
 
@@ -137,8 +138,31 @@ class ChatService:
                 "structured_matches": retrieval.structured_matches,
                 "completeness_pass": retrieval.completeness_pass,
                 "generation_ms": round(generation_ms, 1),
+                "requested_max_output_tokens": (
+                    max(
+                        self.settings.llm.max_output_tokens,
+                        self.settings.llm.exhaustive_max_output_tokens,
+                    )
+                    if retrieval.query_scope != "FOCUSED"
+                    else self.settings.llm.max_output_tokens
+                ),
+                "finish_reason": result.finish_reason,
+                "continued": result.continued,
+                "returned_chars": len(result.answer),
+                "returned_token_estimate": estimate_tokens(result.answer),
             },
             reply_to_message_id=request.user_message_id,
+        )
+        logger.info(
+            "Stored assistant message query_scope=%s provider=%s model=%s "
+            "finish_reason=%s stored_chars=%d stored_token_estimate=%d continued=%s",
+            retrieval.query_scope,
+            message.debug.get("provider", ""),
+            message.debug.get("model", ""),
+            result.finish_reason or "unspecified",
+            len(message.content),
+            estimate_tokens(message.content),
+            result.continued,
         )
         return message
 

@@ -118,7 +118,8 @@ class LLMSettings:
     model: str = "gemini-3.6-flash"
     vision_model: str = ""
     temperature: float = 0.1
-    max_output_tokens: int = 1400
+    max_output_tokens: int = 4096
+    exhaustive_max_output_tokens: int = 8192
     timeout_s: float = 90.0
     enable_multimodal: bool = True
     max_images_per_answer: int = 4
@@ -566,7 +567,10 @@ def _build_llm_settings() -> LLMSettings:
         model=primary.model,
         vision_model=primary.vision_model,
         temperature=_get_float("LLM_TEMPERATURE", 0.1),
-        max_output_tokens=_get_int("LLM_MAX_OUTPUT_TOKENS", 1400),
+        max_output_tokens=_get_int("LLM_MAX_OUTPUT_TOKENS", 4096),
+        exhaustive_max_output_tokens=_get_int(
+            "LLM_EXHAUSTIVE_MAX_OUTPUT_TOKENS", 8192
+        ),
         timeout_s=_get_float("LLM_TIMEOUT_S", 90.0),
         enable_multimodal=_get_bool("LLM_ENABLE_MULTIMODAL", True),
         max_images_per_answer=_get_int("MAX_IMAGES_PER_ANSWER", 4),

@@ -27,6 +27,7 @@ from omnirag.services.chat_service import ChatRequest, ChatService
 from omnirag.services.chat_history import apply_regeneration, plan_regeneration
 from omnirag.services.ingestion_service import IngestionService, UploadedFile
 from omnirag.storage.sessions import new_session_id
+from omnirag.ui.message_actions import copy_component_html
 
 
 @pytest.fixture
@@ -144,6 +145,68 @@ class TestFullPipeline:
         assert updated[1].debug["model"] == "mock-regenerated"
         assert wired.vector_store.count(session_id) == indexed_before
         assert [item.model_dump() for item in wired.registry.list(session_id)] == documents_before
+
+    def test_long_continued_answer_is_stored_copied_and_regenerated_completely(
+        self, service, wired, session_id, sample_markdown
+    ):
+        service.ingest(session_id, UploadedFile(name="report.md", data=sample_markdown))
+        indexed = wired.vector_store.count(session_id)
+
+        class ContinuedLLM(BaseLLMProvider):
+            name = "gemini"
+
+            def __init__(self):
+                super().__init__(model="gemini-3.6-flash")
+                self.responses = [
+                    ("All failures begin with TC", "MAX_TOKENS"),
+                    ("03 and finish naturally [1].", "STOP"),
+                    ("Regenerated list begins with TC", "MAX_TOKENS"),
+                    ("03 and also finishes naturally [1].", "STOP"),
+                ]
+
+            def complete(self, messages, **kwargs):
+                text, reason = self.responses.pop(0)
+                return LLMResponse(
+                    text=text,
+                    model=self.model,
+                    provider=self.name,
+                    finish_reason=reason,
+                    usage={"candidatesTokenCount": 10},
+                )
+
+        wired._llm = ContinuedLLM()
+        user = ChatMessage(role=Role.USER, content="List all failed test cases")
+        first = ChatService(wired).answer(
+            ChatRequest(
+                question=user.content,
+                session_id=session_id,
+                user_message_id=user.message_id,
+            )
+        )
+
+        assert first.content == "All failures begin with TC03 and finish naturally [1]."
+        assert first.debug["finish_reason"] == "STOP"
+        assert first.debug["continued"] is True
+        assert first.debug["returned_chars"] == len(first.content)
+        assert first.content in copy_component_html(first.content)
+
+        history = [user, first]
+        plan = plan_regeneration(history, first.message_id)
+        regenerated = ChatService(wired).answer(
+            ChatRequest(
+                question=plan.prompt,
+                session_id=session_id,
+                history=plan.history,
+                user_message_id=plan.user_message_id,
+            )
+        )
+        updated = apply_regeneration(history, plan, regenerated)
+
+        assert updated[-1].content == (
+            "Regenerated list begins with TC03 and also finishes naturally [1]."
+        )
+        assert updated[-1].debug["continued"] is True
+        assert wired.vector_store.count(session_id) == indexed
 
     def test_document_ingestion_completes_with_runtime_hash_fallback(
         self, engine, ingestion_service, session_id, sample_pdf
