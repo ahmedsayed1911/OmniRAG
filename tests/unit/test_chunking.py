@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import importlib.util
+import sys
+from pathlib import Path
+
 import pytest
+from pydantic import ValidationError
 
 from omnirag.config.settings import ChunkingSettings
 from omnirag.core.enums import BlockType, FileType, SourceKind
-from omnirag.core.models import ContentBlock, Document, Page, TableData, VisualRef
+from omnirag.core.models import Chunk, ContentBlock, Document, Page, TableData, VisualRef
 from omnirag.rag.chunking import ATOMIC_BLOCK_TYPES, Chunker
 
 
@@ -137,6 +142,75 @@ class TestAtomicBlocks:
         assert chunk.visual is not None
         assert chunk.visual.asset_id == "asset-42"
         assert chunk.visual.media_type == "image/jpeg"
+
+    def test_visual_from_pre_reload_model_is_revalidated(self):
+        """A Streamlit hot reload must not strand the old VisualRef identity."""
+        models_path = Path(__file__).parents[2] / "omnirag" / "core" / "models.py"
+        module_name = "omnirag.core.models_pre_reload"
+        spec = importlib.util.spec_from_file_location(module_name, models_path)
+        assert spec is not None and spec.loader is not None
+        old_models = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = old_models
+        try:
+            spec.loader.exec_module(old_models)
+            for model_name in ("VisualRef", "ContentBlock", "Page", "Document"):
+                getattr(old_models, model_name).model_rebuild(
+                    _types_namespace=vars(old_models)
+                )
+        finally:
+            sys.modules.pop(module_name, None)
+
+        old_visual = old_models.VisualRef(
+            asset_id="asset-before-reload",
+            media_type="image/jpeg",
+            width=640,
+            height=480,
+            origin="crop",
+            page_number=2,
+        )
+        assert type(old_visual) is not VisualRef
+        assert not isinstance(old_visual, VisualRef)
+        assert Chunk.model_fields["visual"].annotation != type(old_visual)
+
+        with pytest.raises(ValidationError) as captured:
+            Chunk(
+                document_id="old-document",
+                session_id="s1",
+                filename="reload.pdf",
+                block_ids=["old-block"],
+                visual=old_visual,
+            )
+        error = captured.value.errors(include_url=False)[0]
+        assert error["loc"] == ("visual",)
+        assert error["type"] == "model_type"
+
+        old_block = old_models.ContentBlock(
+            document_id="old-document",
+            session_id="s1",
+            page_number=2,
+            block_type=BlockType.TABLE,
+            source_kind=SourceKind.STRUCTURED,
+            text="A retained table visual.",
+            visual=old_visual,
+        )
+        old_page = old_models.Page(
+            document_id="old-document",
+            session_id="s1",
+            page_number=2,
+            blocks=[old_block],
+        )
+        old_document = old_models.Document(
+            document_id="old-document",
+            session_id="s1",
+            filename="reload.pdf",
+            file_type=FileType.PDF,
+            pages=[old_page],
+        )
+
+        chunk = Chunker().chunk_document(old_document)[0]
+
+        assert isinstance(chunk.visual, VisualRef)
+        assert chunk.visual.model_dump(mode="python") == old_visual.model_dump(mode="python")
 
 
 class TestStructureAwareness:

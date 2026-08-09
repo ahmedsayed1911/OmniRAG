@@ -25,11 +25,11 @@ traced back to its source is never produced — :class:`Chunk` itself rejects it
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, List, Optional, Sequence
+from typing import Dict, Iterable, List, Optional, Sequence
 
 from omnirag.config.settings import ChunkingSettings
 from omnirag.core.enums import BlockType, Language, SourceKind
-from omnirag.core.models import Chunk, ContentBlock, Document, Page
+from omnirag.core.models import Chunk, ContentBlock, Document, Page, VisualRef
 from omnirag.utils.hashing import stable_id
 from omnirag.utils.language import detect_language
 from omnirag.utils.logging import get_logger
@@ -48,6 +48,39 @@ ATOMIC_BLOCK_TYPES = frozenset(
         BlockType.PAGE_SNAPSHOT,
     }
 )
+
+
+def _visual_data(visual: Optional[VisualRef]) -> Optional[Dict[str, object]]:
+    """Cross the ingestion/chunking boundary without retaining class identity.
+
+    Streamlit can briefly retain objects created by the pre-reload module while
+    importing a fresh ``Chunk``/``VisualRef`` class.  Pydantic correctly rejects
+    that stale model instance even though its module and class names match.  A
+    plain-Python dump preserves the typed data and lets ``Chunk`` construct the
+    canonical nested ``VisualRef`` for the current runtime.
+
+    Deliberately call ``model_dump`` directly: a non-Pydantic value is a real
+    programming error and must remain visible rather than being coerced.
+    """
+    if visual is None:
+        return None
+    if not isinstance(visual, VisualRef):
+        actual = type(visual)
+        expected = Chunk.model_fields["visual"].annotation
+        logger.warning(
+            "Revalidating visual across module boundary: actual=%s.%s "
+            "actual_class_id=%d expected_annotation=%r canonical=%s.%s "
+            "canonical_class_id=%d isinstance=%s",
+            actual.__module__,
+            actual.__qualname__,
+            id(actual),
+            expected,
+            VisualRef.__module__,
+            VisualRef.__qualname__,
+            id(VisualRef),
+            False,
+        )
+    return visual.model_dump(mode="python")
 
 
 @dataclass
@@ -191,7 +224,7 @@ class Chunker:
             section=prefix,
             language=block.language if block.language != Language.UNKNOWN else detect_language(text),
             # This is what lets retrieval send the original image to the model.
-            visual=block.visual or page.page_image,
+            visual=_visual_data(block.visual or page.page_image),
             confidence=block.confidence,
             uncertain=block.uncertain,
             token_estimate=estimate_tokens(text),
@@ -233,7 +266,9 @@ class Chunker:
                     language=detect_language(body),
                     # Scanned pages keep their rendering so the model can look
                     # at the actual scan when the OCR text is ambiguous.
-                    visual=acc.page.page_image if acc.page.is_scanned else None,
+                    visual=_visual_data(acc.page.page_image)
+                    if acc.page.is_scanned
+                    else None,
                     confidence=acc.confidence,
                     uncertain=acc.uncertain,
                     token_estimate=estimate_tokens(body),
