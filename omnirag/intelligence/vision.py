@@ -177,6 +177,8 @@ class VisionAnalyzer:
         context: str = "",
         expect: Optional[BlockType] = None,
         skip_decorative_check: bool = False,
+        document_id: str = "",
+        page_number: Optional[int] = None,
     ) -> VisualAnalysis:
         """Describe one visual. Never raises — failures come back as ``error``."""
         if not image:
@@ -194,7 +196,27 @@ class VisionAnalyzer:
                 "Visual understanding is unavailable: no image-capable model is configured."
             )
 
-        key = short_hash(image, 24)
+        provider_identity = "unconfigured"
+        if self.llm is not None:
+            description = self.llm.describe()
+            chain = description.get("chain") or [description]
+            provider_identity = "|".join(
+                f"{item.get('provider', '')}:{item.get('model', '')}"
+                for item in chain
+            )
+        key = short_hash(
+            "|".join(
+                [
+                    "vision-cache-v2",
+                    document_id,
+                    str(page_number or ""),
+                    short_hash(image, 32),
+                    provider_identity,
+                    expect.value if expect else "auto",
+                ]
+            ),
+            32,
+        )
         with self._lock:
             cached = self._cache.get(key)
         if cached is not None:

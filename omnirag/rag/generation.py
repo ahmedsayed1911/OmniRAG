@@ -38,6 +38,7 @@ from omnirag.rag.citations import build_citations, verify_and_clean
 from omnirag.rag.query_rewrite import QueryPlan
 from omnirag.storage.files import FileStore
 from omnirag.utils.language import language_name
+from omnirag.utils.hashing import short_hash
 from omnirag.utils.logging import get_logger
 from omnirag.utils.text import estimate_tokens, truncate
 
@@ -122,7 +123,7 @@ class AnswerGenerator:
 
         citations = build_citations(results)
         context_text = self._format_context(results, citations)
-        images = self._collect_images(results, citations)
+        images = self._collect_images(results, citations, request.plan)
 
         messages = self._build_messages(request, context_text, images)
         active_messages = messages
@@ -146,6 +147,10 @@ class AnswerGenerator:
             # so explicitly in the result.
             logger.warning("Multimodal generation unavailable: %s", exc)
             if not images:
+                raise
+            if request.plan and request.plan.wants_visual:
+                # The question explicitly depends on the attached visual.
+                # Answering text-only would hide an evidence loss.
                 raise
             active_messages = self._build_messages(request, context_text, [])
             with generation_context(generation_id), llm_operation("final_answer_text_only"):
@@ -404,7 +409,10 @@ COMPREHENSIVE MODE
         return "\n\n---\n\n".join(parts)
 
     def _collect_images(
-        self, results: Sequence[SearchResult], citations: Sequence[Citation]
+        self,
+        results: Sequence[SearchResult],
+        citations: Sequence[Citation],
+        plan: Optional[QueryPlan] = None,
     ) -> List[Tuple[int, ImagePart]]:
         """Load the original visuals for retrieved visual blocks.
 
@@ -421,8 +429,28 @@ COMPREHENSIVE MODE
             return []
 
         out: List[Tuple[int, ImagePart]] = []
-        seen: set[str] = set()
-        for citation, result in zip(citations, results):
+        seen_assets: set[str] = set()
+        seen_content: set[str] = set()
+        per_page: Dict[int, int] = {}
+        requested_pages = set(plan.page_filter if plan else [])
+        candidates = list(zip(citations, results))
+        if requested_pages:
+            candidates = [
+                pair for pair in candidates
+                if pair[1].chunk.page_number in requested_pages
+            ]
+            candidates.sort(
+                key=lambda pair: (
+                    pair[1].chunk.visual is None,
+                    0 if (
+                        pair[1].chunk.visual is not None
+                        and pair[1].chunk.visual.origin == "page_render"
+                    ) else 1,
+                    pair[1].rank,
+                )
+            )
+
+        for citation, result in candidates:
             if len(out) >= budget:
                 break
             chunk = result.chunk
@@ -432,14 +460,29 @@ COMPREHENSIVE MODE
             if not (chunk.block_type.is_visual or chunk.source_kind == SourceKind.OCR):
                 continue
             asset_id = chunk.visual.asset_id
-            if asset_id in seen:
+            if asset_id in seen_assets:
+                continue
+            if requested_pages and per_page.get(chunk.page_number, 0) >= 2:
                 continue
 
             data = self.file_store.get(asset_id)
             if not data:
                 logger.debug("Visual asset %s is no longer available", asset_id[:8])
                 continue
-            seen.add(asset_id)
+            content_id = short_hash(data, 24)
+            if content_id in seen_content:
+                continue
+            # One full-page render plus at most one distinct high-ranked crop
+            # gives the model direct evidence without near-duplicate payloads.
+            if (
+                requested_pages
+                and per_page.get(chunk.page_number, 0) >= 1
+                and chunk.visual.origin == "page_render"
+            ):
+                continue
+            seen_assets.add(asset_id)
+            seen_content.add(content_id)
+            per_page[chunk.page_number] = per_page.get(chunk.page_number, 0) + 1
             out.append(
                 (
                     citation.index,

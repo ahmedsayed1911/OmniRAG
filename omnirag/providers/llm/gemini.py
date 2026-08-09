@@ -7,7 +7,9 @@ from typing import Any, Dict, List, Optional, Sequence
 from omnirag.core.enums import Role
 from omnirag.core.exceptions import LLMError, ProviderPolicyError
 from omnirag.providers.http import post_json
-from omnirag.providers.llm.base import BaseLLMProvider, LLMMessage, LLMResponse
+from omnirag.providers.llm.base import (
+    BaseLLMProvider, LLMMessage, LLMRequestRequirements, LLMResponse,
+)
 from omnirag.providers.llm.context import current_generation_id
 from omnirag.utils.images import to_base64
 from omnirag.utils.logging import get_logger
@@ -65,6 +67,7 @@ class GeminiLLM(BaseLLMProvider):
         max_output_tokens: Optional[int] = None,
         model: Optional[str] = None,
         json_mode: bool = False,
+        requirements: Optional[LLMRequestRequirements] = None,
     ) -> LLMResponse:
         has_images = any(m.has_images for m in messages)
         target_model = model or (self.vision_model if has_images else self.model)
@@ -116,6 +119,7 @@ class GeminiLLM(BaseLLMProvider):
                 diagnostics=transport_diagnostics,
             ),
             attempts=self.retry_attempts,
+            max_delay=2.0,
             operation=f"gemini/generateContent ({target_model})",
         )
         return self._parse(body, target_model, transport_diagnostics)

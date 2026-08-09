@@ -16,12 +16,15 @@ from omnirag.core.exceptions import (
     ProviderAuthError,
     ProviderBadRequestError,
     ProviderPolicyError,
+    ProviderPaymentRequiredError,
     ProviderTimeoutError,
     ProviderUnavailableError,
     RateLimitError,
 )
 from omnirag.providers.http import attach_http_context, is_quota_exhausted, post_json
-from omnirag.providers.llm.base import BaseLLMProvider, LLMMessage, LLMResponse
+from omnirag.providers.llm.base import (
+    BaseLLMProvider, LLMMessage, LLMRequestRequirements, LLMResponse,
+)
 from omnirag.utils.images import to_data_url
 from omnirag.utils.logging import get_logger
 from omnirag.utils.retry import retry_call
@@ -73,6 +76,7 @@ class OpenAICompatibleLLM(BaseLLMProvider):
         max_output_tokens: Optional[int] = None,
         model: Optional[str] = None,
         json_mode: bool = False,
+        requirements: Optional[LLMRequestRequirements] = None,
     ) -> LLMResponse:
         has_images = any(m.has_images for m in messages)
         target_model = model or (self.vision_model if has_images else self.model)
@@ -85,6 +89,10 @@ class OpenAICompatibleLLM(BaseLLMProvider):
         }
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
+            if self.name == "openrouter":
+                # Ask OpenRouter to choose only routes that support the
+                # structured-output parameter instead of silently ignoring it.
+                payload["provider"] = {"require_parameters": True}
 
         headers = self._headers()
 
@@ -101,6 +109,7 @@ class OpenAICompatibleLLM(BaseLLMProvider):
             _call,
             attempts=self.retry_attempts,
             operation=f"{self.name}/chat-completions ({target_model})",
+            max_delay=2.0,
         )
         return self._parse(body, target_model)
 
@@ -220,6 +229,12 @@ def raise_gateway_error(error: Dict[str, Any], *, provider: str) -> None:
             f"{provider} auth error: {message}",
             provider=provider,
             user_message=f"The {provider} API rejected your credentials.",
+        ), status, message)
+    if status == 402:
+        raise attach_http_context(ProviderPaymentRequiredError(
+            f"{provider} payment required: {message}",
+            provider=provider,
+            user_message="The configured OpenRouter route requires credits.",
         ), status, message)
     raise attach_http_context(ProviderBadRequestError(
         f"{provider} returned an error: {message}", provider=provider

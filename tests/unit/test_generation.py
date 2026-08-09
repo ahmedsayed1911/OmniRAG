@@ -427,6 +427,38 @@ class TestMultimodalAttachment:
 
         assert recording_llm.calls[0]["images"] == 2
 
+    def test_page_visuals_are_scoped_and_deduplicated(
+        self, recording_llm, file_store, monkeypatch
+    ):
+        monkeypatch.setenv("MAX_VISUALS_PER_QUERY", "3")
+        monkeypatch.setenv("PRIMARY_LLM_PROVIDER", "mock")
+        settings = build_settings()
+        page = file_store.put("s1", b"page-3", media_type="image/png")
+        duplicate = file_store.put("s1", b"page-3", media_type="image/png")
+        crop = file_store.put("s1", b"page-3-crop", media_type="image/png")
+        other = file_store.put("s1", b"page-4", media_type="image/png")
+        chunks = [
+            chunk("full page", page=3, block_type=BlockType.PAGE_SNAPSHOT,
+                  visual=VisualRef(asset_id=page.asset_id, origin="page_render")),
+            chunk("duplicate page", page=3, block_type=BlockType.PAGE_SNAPSHOT,
+                  visual=VisualRef(asset_id=duplicate.asset_id, origin="page_render")),
+            chunk("diagram crop", page=3, block_type=BlockType.DIAGRAM,
+                  visual=VisualRef(asset_id=crop.asset_id, origin="crop")),
+            chunk("unrelated", page=4, block_type=BlockType.DIAGRAM,
+                  visual=VisualRef(asset_id=other.asset_id, origin="page_render")),
+        ]
+        recording_llm.responses = ["Grounded answer [1]."]
+        result = AnswerGenerator(
+            recording_llm, file_store=file_store, settings=settings
+        ).generate(GenerationRequest(
+            question="Explain the diagram on Page 3",
+            retrieval=retrieval(*chunks),
+            session_id="s1",
+            plan=parse_query("Explain the diagram on Page 3"),
+        ))
+        assert recording_llm.calls[0]["images"] == 2
+        assert result.used_images == 2
+
     def test_missing_asset_does_not_break_the_answer(self, generator, recording_llm):
         recording_llm.responses = ["Answer [1]"]
         result = generator.generate(
@@ -494,3 +526,37 @@ class TestMultimodalAttachment:
         assert result.used_images == 0
         # The user is told the visual evidence could not be read.
         assert any("cannot read images" in w for w in result.warnings)
+
+    def test_required_visual_is_never_silently_dropped(self, file_store, settings):
+        from omnirag.core.exceptions import ProviderCapabilityError
+
+        class RejectingVisionLLM:
+            name = "openrouter"
+            model = "openrouter/free"
+
+            def supports_images(self, model=None):
+                return True
+
+            def complete(self, messages, **kwargs):
+                raise ProviderCapabilityError(
+                    "no compatible image route",
+                    provider="openrouter",
+                    capability="images",
+                    user_message="No free multimodal OpenRouter model is currently available.",
+                )
+
+        asset = file_store.put("s1", b"visual", media_type="image/png")
+        plan = parse_query("Explain the diagram on Page 3")
+        generator = AnswerGenerator(
+            RejectingVisionLLM(), file_store=file_store, settings=settings
+        )
+        with pytest.raises(ProviderCapabilityError):
+            generator.generate(GenerationRequest(
+                question=plan.original,
+                retrieval=retrieval(chunk(
+                    "diagram", page=3, block_type=BlockType.DIAGRAM,
+                    visual=VisualRef(asset_id=asset.asset_id, origin="page_render"),
+                )),
+                session_id="s1",
+                plan=plan,
+            ))

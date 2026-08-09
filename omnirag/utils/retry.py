@@ -30,6 +30,8 @@ DEFAULT_RETRYABLE: tuple[Type[BaseException], ...] = (
 
 
 def is_retryable(exc: BaseException) -> bool:
+    if isinstance(exc, RateLimitError):
+        return not exc.quota_exhausted
     if isinstance(exc, DEFAULT_RETRYABLE):
         return True
     if isinstance(exc, ProviderError):
@@ -71,6 +73,7 @@ def retry_call(
             delay = getattr(exc, "retry_after", None) or backoff_delay(
                 attempt, base_delay, max_delay
             )
+            delay = min(float(delay), max_delay)
             logger.warning(
                 "%s failed (attempt %d/%d): %s — retrying in %.1fs",
                 operation,

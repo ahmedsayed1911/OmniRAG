@@ -243,7 +243,8 @@ class TestImageProcessor:
             def available(self):
                 return True
 
-            def analyze(self, image, *, context="", expect=None, skip_decorative_check=False):
+            def analyze(self, image, *, context="", expect=None, skip_decorative_check=False,
+                        document_id="", page_number=None):
                 return VisualAnalysis(
                     block_type=BT.CHART,
                     title="Quarterly revenue",
@@ -297,3 +298,28 @@ class TestTableIntelligence:
         table = build_table([["A", "B"], ["", ""], ["1", "2"]])
         assert table is not None
         assert table.n_rows == 1
+def test_visual_analysis_cache_uses_stable_document_page_and_model_identity(sample_png):
+    from omnirag.intelligence.vision import VisionAnalyzer
+    from omnirag.providers.llm.mock import MockLLM
+
+    llm = MockLLM(
+        responder=lambda messages, system: (
+            '{"type":"diagram","description":"A stable diagram",'
+            '"text":"Salary Software System","confidence":0.9}'
+        )
+    )
+    analyzer = VisionAnalyzer(llm, min_image_pixels=1)
+
+    first = analyzer.analyze(
+        sample_png, document_id="doc-hash", page_number=3,
+        skip_decorative_check=True,
+    )
+    second = analyzer.analyze(
+        sample_png, document_id="doc-hash", page_number=3,
+        skip_decorative_check=True,
+    )
+
+    assert first.ok and second.ok
+    assert analyzer.calls == 1
+    assert analyzer.cache_hits == 1
+    assert len(llm.calls) == 1

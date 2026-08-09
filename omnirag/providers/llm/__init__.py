@@ -10,6 +10,7 @@ from omnirag.providers.llm.base import (
     BaseLLMProvider,
     ImagePart,
     LLMMessage,
+    LLMRequestRequirements,
     LLMResponse,
 )
 from omnirag.providers.llm.factory import (
@@ -36,6 +37,7 @@ __all__ = [
     "GeminiLLM",
     "ImagePart",
     "LLMMessage",
+    "LLMRequestRequirements",
     "LLMResponse",
     "MockLLM",
     "OpenAICompatibleLLM",

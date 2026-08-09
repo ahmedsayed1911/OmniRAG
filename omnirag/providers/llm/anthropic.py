@@ -7,7 +7,9 @@ from typing import Any, Dict, List, Optional, Sequence
 from omnirag.core.enums import Role
 from omnirag.core.exceptions import LLMError
 from omnirag.providers.http import post_json
-from omnirag.providers.llm.base import BaseLLMProvider, LLMMessage, LLMResponse
+from omnirag.providers.llm.base import (
+    BaseLLMProvider, LLMMessage, LLMRequestRequirements, LLMResponse,
+)
 from omnirag.utils.images import to_base64
 from omnirag.utils.logging import get_logger
 from omnirag.utils.retry import retry_call
@@ -50,6 +52,7 @@ class AnthropicLLM(BaseLLMProvider):
         max_output_tokens: Optional[int] = None,
         model: Optional[str] = None,
         json_mode: bool = False,
+        requirements: Optional[LLMRequestRequirements] = None,
     ) -> LLMResponse:
         has_images = any(m.has_images for m in messages)
         target_model = model or (self.vision_model if has_images else self.model)

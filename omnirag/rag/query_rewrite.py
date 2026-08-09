@@ -36,12 +36,27 @@ from omnirag.utils.text import dedupe_preserve_order
 logger = get_logger(__name__)
 
 # "page 17", "p. 17", "pages 3-5", "slide 4", "الصفحة ١٧", "صفحة 17", "شريحة 4"
-_PAGE_PATTERNS = (
-    re.compile(r"\b(?:pages?|pg\.?|p\.)\s*(\d{1,4})(?:\s*[-–to]+\s*(\d{1,4}))?\b", re.I),
-    re.compile(r"\bslides?\s*(\d{1,4})(?:\s*[-–to]+\s*(\d{1,4}))?\b", re.I),
-    re.compile(r"(?:الصفحه|الصفحة|صفحة|صفحه|ص)\s*[:\-]?\s*([\d٠-٩]{1,4})"),
-    re.compile(r"(?:الشريحة|الشريحه|شريحة|شريحه)\s*[:\-]?\s*([\d٠-٩]{1,4})"),
+_NUMBER = r"[0-9٠-٩]{1,4}"
+_PAGE_LABEL = r"(?:pages?|pg\.?|p\.|slides?|الصفحة|الصفحه|صفحة|صفحه|الصفحات|صفحات|الشريحة|الشريحه|شريحة|شريحه)"
+_PAGE_RANGE = re.compile(
+    rf"{_PAGE_LABEL}\s*[:\-]?\s*({_NUMBER})\s*(?:-|–|—|to|إلى|الى)\s*({_NUMBER})",
+    re.I,
 )
+_PAGE_LIST = re.compile(
+    rf"{_PAGE_LABEL}\s*[:\-]?\s*({_NUMBER}(?:\s*(?:and|&|,|،|و)\s*{_NUMBER})+)",
+    re.I,
+)
+_PAGE_SINGLE = re.compile(rf"{_PAGE_LABEL}\s*[:\-]?\s*({_NUMBER})", re.I)
+_ARABIC_ORDINAL_PAGE = re.compile(
+    r"(?:الصفحة|الصفحه|صفحة|صفحه)\s+(الأولى|الاولى|الثانية|الثانيه|الثالثة|الثالثه|الرابعة|الرابعه|الخامسة|الخامسه|السادسة|السادسه|السابعة|السابعه|الثامنة|الثامنه|التاسعة|التاسعه|العاشرة|العاشره)"
+)
+_ARABIC_ORDINALS = {
+    "الأولى": 1, "الاولى": 1, "الثانية": 2, "الثانيه": 2,
+    "الثالثة": 3, "الثالثه": 3, "الرابعة": 4, "الرابعه": 4,
+    "الخامسة": 5, "الخامسه": 5, "السادسة": 6, "السادسه": 6,
+    "السابعة": 7, "السابعه": 7, "الثامنة": 8, "الثامنه": 8,
+    "التاسعة": 9, "التاسعه": 9, "العاشرة": 10, "العاشره": 10,
+}
 _ARABIC_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
 
 _ANSWER_LANGUAGE_PATTERNS = (
@@ -206,24 +221,23 @@ def decompose_query(plan: QueryPlan) -> List[str]:
 
 
 def _extract_pages(query: str) -> List[int]:
-    pages: List[int] = []
-    for pattern in _PAGE_PATTERNS:
-        for match in pattern.finditer(query):
-            start_raw = (match.group(1) or "").translate(_ARABIC_DIGITS)
-            if not start_raw.isdigit():
-                continue
-            start = int(start_raw)
-            end = start
-            if match.lastindex and match.lastindex >= 2 and match.group(2):
-                end_raw = match.group(2).translate(_ARABIC_DIGITS)
-                if end_raw.isdigit():
-                    end = int(end_raw)
-            if end < start:
-                start, end = end, start
-            # Guard against absurd ranges from a mis-parse.
-            if end - start > 40:
-                end = start
-            pages.extend(range(start, end + 1))
+    pages: List[int] = [
+        _ARABIC_ORDINALS[match.group(1)]
+        for match in _ARABIC_ORDINAL_PAGE.finditer(query)
+    ]
+    for match in _PAGE_RANGE.finditer(query):
+        start = int(match.group(1).translate(_ARABIC_DIGITS))
+        end = int(match.group(2).translate(_ARABIC_DIGITS))
+        if end < start:
+            start, end = end, start
+        pages.extend(range(start, end + 1 if end - start <= 40 else start + 1))
+    for match in _PAGE_LIST.finditer(query):
+        pages.extend(
+            int(raw.translate(_ARABIC_DIGITS))
+            for raw in re.findall(_NUMBER, match.group(1))
+        )
+    for match in _PAGE_SINGLE.finditer(query):
+        pages.append(int(match.group(1).translate(_ARABIC_DIGITS)))
     return sorted(set(p for p in pages if 1 <= p <= 5000))
 
 

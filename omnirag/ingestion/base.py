@@ -251,6 +251,8 @@ class BaseDocumentProcessor(ABC):
                     context=context_text,
                     expect=expect,
                     skip_decorative_check=skip_decorative_check,
+                    document_id=ctx.document_id,
+                    page_number=page_number,
                 )
             else:
                 ctx.warn(

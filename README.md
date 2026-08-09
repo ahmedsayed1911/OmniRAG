@@ -338,7 +338,8 @@ GEMINI_API_KEY=...              # https://aistudio.google.com/apikey
 GEMINI_MODEL=gemini-3.6-flash
 
 OPENROUTER_API_KEY=...          # https://openrouter.ai/keys
-OPENROUTER_MODEL=google/gemini-3.6-flash
+OPENROUTER_MODEL=openrouter/free
+OPENROUTER_FREE_FALLBACK=true
 ```
 
 **All four configurations work:**
@@ -350,10 +351,11 @@ OPENROUTER_MODEL=google/gemini-3.6-flash
 | OpenRouter only | OpenRouter becomes the active provider |
 | Neither | A clear configuration error in the UI — the app does not crash |
 
-**Pick a vision-capable OpenRouter model.** Capability is detected from the
-model slug; if a multimodal request would reach a text-only model, OmniRAG
-raises a controlled error explaining what to change rather than silently
-dropping the chart from the evidence. Override detection with
+**The default uses OpenRouter's official free router.** It dynamically selects
+a currently available free model and filters routes using the request's image
+and structured-output requirements. If no compatible free multimodal route is
+available, OmniRAG reports that explicitly instead of dropping the chart.
+Concrete OpenRouter model IDs remain supported. Override detection with
 `OPENROUTER_MODEL_SUPPORTS_IMAGES=true|false` if you know better.
 
 Other vendors (`openai`, `anthropic`, any OpenAI-compatible gateway via
@@ -368,14 +370,16 @@ Other vendors (`openai`, `anthropic`, any OpenAI-compatible gateway via
 | `FALLBACK_LLM_PROVIDER` | `openrouter` | Provider used on recoverable failures |
 | `ENABLE_PROVIDER_FALLBACK` | `true` | Master switch for failover |
 | `GEMINI_API_KEY` / `GEMINI_MODEL` | — / `gemini-3.6-flash` | Primary credentials |
-| `OPENROUTER_API_KEY` / `OPENROUTER_MODEL` | — / `google/gemini-3.6-flash` | Fallback credentials |
+| `OPENROUTER_API_KEY` / `OPENROUTER_MODEL` | — / `openrouter/free` | Fallback credentials and dynamic free route |
+| `OPENROUTER_FREE_FALLBACK` | `true` | Retry an explicitly configured credit-requiring route once through `openrouter/free` |
+| `PROVIDER_RATE_LIMIT_COOLDOWN_SECONDS` | `60` | Per-session Gemini cooldown after 429 |
 | `VISION_MODEL` | = LLM model | Model used for visual analysis |
 | `LLM_TEMPERATURE` | `0.1` | Generation temperature |
 | `LLM_MAX_OUTPUT_TOKENS` | `4096` | Focused-answer output budget |
 | `LLM_EXHAUSTIVE_MAX_OUTPUT_TOKENS` | `8192` | Global/exhaustive output budget |
 | `LLM_TIMEOUT_S` | `90` | Per-request timeout |
 | `LLM_RETRY_ATTEMPTS` | `2` | Quick retries before failing over |
-| `MAX_IMAGES_PER_ANSWER` | `4` | Visual budget per answer |
+| `MAX_VISUALS_PER_QUERY` | `3` | Visual budget per answer (`MAX_IMAGES_PER_ANSWER` remains a legacy alias) |
 | `EMBEDDING_PROVIDER` | auto | `openai` \| `gemini` \| `cohere` \| `jina` \| `hash` |
 | `EMBEDDING_API_KEY` / `EMBEDDING_MODEL` | auto / `gemini-embedding-001` with Gemini | Optional dedicated embedding credentials/model; `GEMINI_API_KEY` is reused for Gemini |
 | `QDRANT_URL` / `QDRANT_API_KEY` | — | Vector database (empty = in-memory) |
@@ -540,7 +544,8 @@ GEMINI_API_KEY = "your-gemini-key"
 GEMINI_MODEL = "gemini-3.6-flash"
 
 OPENROUTER_API_KEY = "your-openrouter-key"
-OPENROUTER_MODEL = "google/gemini-3.6-flash"
+OPENROUTER_MODEL = "openrouter/free"
+OPENROUTER_FREE_FALLBACK = true
 
 QDRANT_URL = "https://xxxxxxxx.eu-central.aws.cloud.qdrant.io:6333"
 QDRANT_API_KEY = "your-qdrant-key"
@@ -760,7 +765,7 @@ OpenRouter, OpenAI, Cohere or Jina, the following leaves your machine:
 | Answering | Retrieved passages + relevant images | The LLM provider |
 
 Whole documents are never sent — only the chunks retrieval selected, plus up to
-`MAX_IMAGES_PER_ANSWER` images. Set `VISION_ENABLED=false` to stop images
+`MAX_VISUALS_PER_QUERY` images. Set `VISION_ENABLED=false` to stop images
 leaving entirely. For a fully local deployment, point `LLM_BASE_URL` at a
 self-hosted OpenAI-compatible server and run Qdrant locally.
 

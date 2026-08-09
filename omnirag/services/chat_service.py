@@ -25,6 +25,7 @@ from omnirag.core.models import ChatMessage, RetrievalResult
 from omnirag.rag.generation import AnswerGenerator, GenerationRequest
 from omnirag.rag.query_rewrite import parse_query
 from omnirag.rag.retrieval import RetrievalRequest, Retriever
+from omnirag.providers.llm.context import llm_session
 from omnirag.services.engine import OmniRAGEngine
 from omnirag.storage.sessions import require_session_id
 from omnirag.utils.logging import get_logger
@@ -57,6 +58,10 @@ class ChatService:
     def answer(self, request: ChatRequest) -> ChatMessage:
         """Run the full RAG turn. Errors become a user-readable message."""
         session_id = require_session_id(request.session_id)
+        with llm_session(session_id):
+            return self._answer(request, session_id)
+
+    def _answer(self, request: ChatRequest, session_id: str) -> ChatMessage:
         question = (request.question or "").strip()
         started = time.perf_counter()
 

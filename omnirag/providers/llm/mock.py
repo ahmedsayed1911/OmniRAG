@@ -12,7 +12,9 @@ from __future__ import annotations
 import re
 from typing import Callable, Dict, List, Optional, Sequence
 
-from omnirag.providers.llm.base import BaseLLMProvider, LLMMessage, LLMResponse
+from omnirag.providers.llm.base import (
+    BaseLLMProvider, LLMMessage, LLMRequestRequirements, LLMResponse,
+)
 
 _CONTEXT_RE = re.compile(r"\[(\d+)\]\s*\[(?P<label>[^\]]+)\]")
 
@@ -44,6 +46,7 @@ class MockLLM(BaseLLMProvider):
         max_output_tokens: Optional[int] = None,
         model: Optional[str] = None,
         json_mode: bool = False,
+        requirements: Optional[LLMRequestRequirements] = None,
     ) -> LLMResponse:
         self.calls.append(
             {
@@ -51,6 +54,7 @@ class MockLLM(BaseLLMProvider):
                 "text": "\n".join(m.text for m in messages),
                 "images": sum(len(m.images) for m in messages),
                 "json_mode": json_mode,
+                "requirements": requirements,
             }
         )
 

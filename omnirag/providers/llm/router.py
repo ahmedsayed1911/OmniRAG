@@ -36,10 +36,13 @@ from typing import Any, Dict, List, Optional, Sequence
 from omnirag.core.exceptions import (
     AllProvidersFailedError,
     ProviderCapabilityError,
+    RateLimitError,
 )
 from omnirag.providers.errors import FailureClass, classify, describe
-from omnirag.providers.llm.base import BaseLLMProvider, LLMMessage, LLMResponse
-from omnirag.providers.llm.context import current_llm_operation
+from omnirag.providers.llm.base import (
+    BaseLLMProvider, LLMMessage, LLMRequestRequirements, LLMResponse,
+)
+from omnirag.providers.llm.context import current_llm_operation, current_llm_session_id
 from omnirag.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -87,6 +90,8 @@ class FallbackLLMProvider(BaseLLMProvider):
         providers: Sequence[BaseLLMProvider],
         *,
         enable_fallback: bool = True,
+        rate_limit_cooldown_seconds: float = 60.0,
+        clock=time.monotonic,
     ):
         active = [p for p in providers if p is not None]
         if not active:
@@ -103,6 +108,9 @@ class FallbackLLMProvider(BaseLLMProvider):
         self.supports_vision = any(p.supports_vision for p in self.providers)
         self.stats = RouterStats()
         self._lock = threading.Lock()
+        self.rate_limit_cooldown_seconds = max(0.0, rate_limit_cooldown_seconds)
+        self._clock = clock
+        self._rate_limit_cooldowns: Dict[str, float] = {}
 
     # ------------------------------------------------------------------ #
     @property
@@ -140,14 +148,42 @@ class FallbackLLMProvider(BaseLLMProvider):
         max_output_tokens: Optional[int] = None,
         model: Optional[str] = None,
         json_mode: bool = False,
+        requirements: Optional[LLMRequestRequirements] = None,
     ) -> LLMResponse:
         needs_images = any(m.has_images for m in messages)
         operation = current_llm_operation()
+        requirements = requirements or LLMRequestRequirements(
+            requires_text=True,
+            requires_images=needs_images,
+            requires_structured_output=json_mode,
+            operation=operation,
+        )
+        needs_images = requirements.requires_images
+        session_id = current_llm_session_id()
         attempts: List[ProviderAttempt] = []
         failures: List[tuple[str, BaseException]] = []
         capability_error: Optional[ProviderCapabilityError] = None
+        cooldown_error: Optional[RateLimitError] = None
 
         for index, provider in enumerate(self.chain):
+            if provider.name == "gemini" and self._cooldown_active(session_id):
+                attempts.append(ProviderAttempt(
+                    provider=provider.name,
+                    model=model or provider.model,
+                    operation=operation,
+                    outcome="skipped",
+                    failure_class="rate_limit_cooldown",
+                ))
+                logger.info(
+                    "LLM operation=%s provider=gemini skipped=session_rate_limit_cooldown",
+                    operation,
+                )
+                cooldown_error = RateLimitError(
+                    "Gemini is temporarily skipped after a session rate limit",
+                    provider="gemini",
+                    quota_exhausted=True,
+                )
+                continue
             # -- capability gate: never silently drop visual evidence -------- #
             if needs_images and not provider.supports_images(model):
                 logger.info(
@@ -196,6 +232,7 @@ class FallbackLLMProvider(BaseLLMProvider):
                     max_output_tokens=max_output_tokens,
                     model=model,
                     json_mode=json_mode,
+                    requirements=requirements,
                 )
             except BaseException as exc:  # noqa: BLE001 - classified below
                 elapsed = (time.perf_counter() - started) * 1000
@@ -212,6 +249,9 @@ class FallbackLLMProvider(BaseLLMProvider):
                     )
                 )
                 failures.append((provider.name, exc))
+
+                if provider.name == "gemini" and isinstance(exc, RateLimitError):
+                    self._start_cooldown(session_id)
 
                 logger.warning(
                     "LLM operation=%s provider=%s model=%s status=%s "
@@ -267,7 +307,7 @@ class FallbackLLMProvider(BaseLLMProvider):
             logger.info("%s request succeeded in %.0f ms", provider.name, elapsed)
 
             response.provider = response.provider or provider.name
-            response.fallback_used = index > 0
+            response.fallback_used = response.fallback_used or index > 0
             response.attempts = [str(a) for a in attempts]
             self._record(response, failover=index > 0)
             return response
@@ -275,13 +315,37 @@ class FallbackLLMProvider(BaseLLMProvider):
         # Every provider was skipped or failed.
         if capability_error is not None and not failures:
             raise capability_error
+        if cooldown_error is not None and failures:
+            failures.insert(0, ("gemini", cooldown_error))
+        if capability_error is not None and failures:
+            failures.append((capability_error.provider or "provider", capability_error))
         if not failures:
+            if cooldown_error is not None:
+                raise cooldown_error
             raise ProviderCapabilityError(
                 "No configured provider could serve this request",
                 provider=self.name,
                 user_message="No configured AI provider could handle this request.",
             )
         raise AllProvidersFailedError(failures)
+
+    def _cooldown_active(self, session_id: str) -> bool:
+        if not session_id or self.rate_limit_cooldown_seconds <= 0:
+            return False
+        with self._lock:
+            expiry = self._rate_limit_cooldowns.get(session_id, 0.0)
+            if expiry <= self._clock():
+                self._rate_limit_cooldowns.pop(session_id, None)
+                return False
+            return True
+
+    def _start_cooldown(self, session_id: str) -> None:
+        if not session_id or self.rate_limit_cooldown_seconds <= 0:
+            return
+        with self._lock:
+            self._rate_limit_cooldowns[session_id] = (
+                self._clock() + self.rate_limit_cooldown_seconds
+            )
 
     # ------------------------------------------------------------------ #
     def _record(self, response: LLMResponse, *, failover: bool) -> None:

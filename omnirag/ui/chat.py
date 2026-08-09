@@ -311,7 +311,7 @@ def _generation_debug_payload(message: ChatMessage) -> dict:
 
 def _used_fallback(debug: dict) -> bool:
     attempts = debug.get("provider_attempts") or []
-    return len(attempts) > 1
+    return len(attempts) > 1 or bool(debug.get("openrouter_free_fallback"))
 
 
 def _used_indices(message: ChatMessage) -> set:

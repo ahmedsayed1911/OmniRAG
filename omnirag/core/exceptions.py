@@ -163,6 +163,16 @@ class ProviderBadRequestError(ProviderError):
         super().__init__(detail, user_message=user_message, provider=provider, retryable=False)
 
 
+class ProviderPaymentRequiredError(ProviderError):
+    """402 — the selected provider route requires credits."""
+
+    default_user_message = "The selected AI route requires provider credits."
+
+    def __init__(self, detail: str = "", *, user_message: Optional[str] = None,
+                 provider: str = "") -> None:
+        super().__init__(detail, user_message=user_message, provider=provider, retryable=False)
+
+
 class ProviderPolicyError(ProviderError):
     """The model refused on safety/policy grounds.
 

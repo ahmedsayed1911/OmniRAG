@@ -44,6 +44,8 @@ def _signature(cfg: LLMSettings) -> str:
         str(cfg.enable_fallback),
         str(cfg.temperature),
         str(cfg.max_output_tokens),
+        str(cfg.openrouter_free_fallback),
+        str(cfg.rate_limit_cooldown_seconds),
     ]
     parts.extend(f"{e.provider}:{len(e.api_key)}:{e.base_url}" for e in cfg.endpoints)
     return "|".join(parts)
@@ -77,7 +79,11 @@ def build_endpoint_provider(
     if provider == "gemini":
         return GeminiLLM(**common)
     if provider == "openrouter":
-        return OpenRouterLLM(supports_images_override=endpoint.supports_images, **common)
+        return OpenRouterLLM(
+            supports_images_override=endpoint.supports_images,
+            free_fallback=cfg.openrouter_free_fallback,
+            **common,
+        )
     if provider in ("openai", "openai_compatible"):
         return OpenAICompatibleLLM(**common)
     if provider == "anthropic":
@@ -125,7 +131,11 @@ def build_llm_provider(cfg: LLMSettings) -> BaseLLMProvider:
             ),
         )
 
-    router = FallbackLLMProvider(providers, enable_fallback=cfg.enable_fallback)
+    router = FallbackLLMProvider(
+        providers,
+        enable_fallback=cfg.enable_fallback,
+        rate_limit_cooldown_seconds=cfg.rate_limit_cooldown_seconds,
+    )
     logger.info(
         "LLM chain ready: %s (fallback %s)",
         " → ".join(f"{p.name}:{p.model}" for p in router.chain),

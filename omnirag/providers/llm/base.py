@@ -64,6 +64,16 @@ class LLMResponse:
         return self.provider or self.model or "unknown"
 
 
+@dataclass(frozen=True)
+class LLMRequestRequirements:
+    """Capabilities a routed operation must preserve end to end."""
+
+    requires_text: bool = True
+    requires_images: bool = False
+    requires_structured_output: bool = False
+    operation: str = "unspecified"
+
+
 class BaseLLMProvider(ABC):
     """Contract every LLM adapter implements."""
 
@@ -96,6 +106,7 @@ class BaseLLMProvider(ABC):
         max_output_tokens: Optional[int] = None,
         model: Optional[str] = None,
         json_mode: bool = False,
+        requirements: Optional[LLMRequestRequirements] = None,
     ) -> LLMResponse:
         """Generate a completion. Raises :class:`~omnirag.core.exceptions.LLMError`."""
 

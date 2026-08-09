@@ -155,6 +155,47 @@ class TestRetrieverPipeline:
         assert result.results
         assert {r.chunk.page_number for r in result.results} == {3}
 
+    def test_page_specific_query_skips_llm_rewrite(self, indexed, session_id, fake_embeddings):
+        class RewriteSpy:
+            calls = 0
+
+            def complete(self, *args, **kwargs):
+                self.calls += 1
+                raise AssertionError("page-specific query must not call query rewrite")
+
+        store, _ = indexed
+        retriever = build_retriever(store, fake_embeddings, query_rewrite=True)
+        retriever.llm = RewriteSpy()
+        result = retriever.retrieve(
+            RetrievalRequest(query="Explain the diagram on Page 3", session_id=session_id)
+        )
+        assert retriever.llm.calls == 0
+        assert any("Skipped LLM query rewrite" in note for note in result.notes)
+
+    def test_page_filtered_candidates_avoid_model_reranker(self, session_id, fake_embeddings):
+        class ModelReranker:
+            is_model_based = True
+            calls = 0
+
+            def rerank(self, *args, **kwargs):
+                self.calls += 1
+                raise AssertionError("model reranker must not be used")
+
+        store = InMemoryVectorStore()
+        chunks = [
+            make_chunk(session_id, "Page 3 full diagram", page=3),
+            make_chunk(session_id, "Salary Software System crop", page=3),
+            make_chunk(session_id, "Unrelated page", page=4),
+        ]
+        store.upsert(session_id, chunks, fake_embeddings.embed_documents([c.text for c in chunks]))
+        retriever = build_retriever(store, fake_embeddings)
+        retriever.reranker = ModelReranker()
+        result = retriever.retrieve(
+            RetrievalRequest(query="Explain Page 3", session_id=session_id)
+        )
+        assert retriever.reranker.calls == 0
+        assert {item.chunk.page_number for item in result.results} == {3}
+
     def test_missing_page_reports_a_note_instead_of_wrong_content(
         self, indexed, session_id, fake_embeddings
     ):
@@ -229,11 +270,15 @@ class TestHeuristicReranker:
 class TestQueryParsing:
     @pytest.mark.parametrize("query,pages", [
         ("Explain page 17", [17]),
+        ("Explain page 03", [3]),
         ("What is on p. 3?", [3]),
         ("Summarise pages 4-6", [4, 5, 6]),
+        ("Compare pages 3 and 4", [3, 4]),
         ("What does slide 12 show?", [12]),
         ("اشرح الصفحة 23", [23]),
         ("اشرح الصفحة ٢٣", [23]),
+        ("اشرح الصفحة الثالثة", [3]),
+        ("قارن صفحات 3 و4", [3, 4]),
         ("Tell me about revenue", []),
     ])
     def test_page_intent_extraction(self, query, pages):

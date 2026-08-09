@@ -27,6 +27,7 @@ from omnirag.core.exceptions import (
     ProviderCapabilityError,
     ProviderError,
     ProviderPolicyError,
+    ProviderPaymentRequiredError,
     ProviderTimeoutError,
     ProviderUnavailableError,
     RateLimitError,
@@ -37,6 +38,7 @@ class FailureClass(str, Enum):
     RECOVERABLE = "recoverable"        # try the next provider
     AUTH = "auth"                      # bad key — fix configuration
     BAD_REQUEST = "bad_request"        # our payload/model name is wrong
+    PAYMENT = "payment_required"       # route needs credits
     POLICY = "policy"                  # deliberate safety refusal
     CAPABILITY = "capability"          # model cannot do this (e.g. images)
     BUG = "bug"                        # not a provider error at all
@@ -58,6 +60,8 @@ def classify(exc: BaseException) -> FailureClass:
         return FailureClass.CAPABILITY
     if isinstance(exc, ProviderAuthError):
         return FailureClass.AUTH
+    if isinstance(exc, ProviderPaymentRequiredError):
+        return FailureClass.PAYMENT
     if isinstance(exc, ProviderBadRequestError):
         return FailureClass.BAD_REQUEST
     if isinstance(exc, AllProvidersFailedError):

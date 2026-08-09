@@ -27,6 +27,7 @@ from omnirag.core.exceptions import RetrievalError, VectorStoreError
 from omnirag.core.models import Chunk, RetrievalResult, SearchResult
 from omnirag.providers.embeddings.base import BaseEmbeddingProvider
 from omnirag.providers.rerank.base import BaseReranker, RerankCandidate
+from omnirag.providers.rerank.heuristic import HeuristicReranker
 from omnirag.rag.hybrid import get_bm25_cache, reciprocal_rank_fusion
 from omnirag.rag.query_rewrite import QueryPlan, expand_with_llm, parse_query
 from omnirag.rag.vector_store import BaseVectorStore, SearchFilter
@@ -87,8 +88,15 @@ class Retriever:
         # -- 1. plan ---------------------------------------------------- #
         started = time.perf_counter()
         plan = parse_query(request.query, request.history)
-        if request.use_expansion and cfg.query_rewrite and self.llm is not None:
+        if (
+            request.use_expansion
+            and cfg.query_rewrite
+            and self.llm is not None
+            and not plan.page_filter
+        ):
             plan = expand_with_llm(plan, self.llm, max_expansions=cfg.max_expansions)
+        elif plan.page_filter:
+            plan.notes.append("Skipped LLM query rewrite for an explicit page constraint.")
         timings["plan_ms"] = (time.perf_counter() - started) * 1000
 
         broad = plan.scope != QueryScope.FOCUSED
@@ -220,7 +228,17 @@ class Retriever:
         # -- 5. rerank -------------------------------------------------- #
         if request.use_rerank and self.reranker is not None and len(candidates) > 1:
             started = time.perf_counter()
-            candidates, reranked = self._rerank(plan, candidates, final_k * 3)
+            active_reranker = self.reranker
+            if getattr(active_reranker, "is_model_based", False) and (
+                plan.page_filter or len(candidates) <= max(12, final_k)
+            ):
+                active_reranker = HeuristicReranker(top_n=final_k * 3)
+                result.notes.append(
+                    "Used deterministic reranking for the bounded candidate set."
+                )
+            candidates, reranked = self._rerank(
+                plan, candidates, final_k * 3, active_reranker
+            )
             result.reranked = reranked
             timings["rerank_ms"] = (time.perf_counter() - started) * 1000
 
@@ -348,14 +366,21 @@ class Retriever:
         return order, scores, pool
 
     def _rerank(
-        self, plan: QueryPlan, candidates: List[SearchResult], limit: int
+        self,
+        plan: QueryPlan,
+        candidates: List[SearchResult],
+        limit: int,
+        reranker: Optional[BaseReranker] = None,
     ) -> tuple[List[SearchResult], bool]:
+        reranker = reranker or self.reranker
+        if reranker is None:
+            return candidates, False
         window = candidates[:limit]
         payload = [
             RerankCandidate(ref=item.chunk.chunk_id, text=item.chunk.text) for item in window
         ]
         try:
-            scores = self.reranker.rerank(plan.normalized, payload, top_n=len(payload))
+            scores = reranker.rerank(plan.normalized, payload, top_n=len(payload))
         except Exception as exc:
             logger.warning("Reranking failed (%s) — keeping fusion order", exc)
             return candidates, False

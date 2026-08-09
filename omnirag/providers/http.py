@@ -14,6 +14,7 @@ from omnirag.core.exceptions import (
     ProviderAuthError,
     ProviderBadRequestError,
     ProviderError,
+    ProviderPaymentRequiredError,
     ProviderTimeoutError,
     ProviderUnavailableError,
     RateLimitError,
@@ -143,6 +144,17 @@ def _handle_response(response: Any, *, provider: str) -> Dict[str, Any]:
             user_message=(
                 f"The {provider} API rejected your credentials. "
                 "Check the API key in your secrets."
+            ),
+        ), status, body)
+    if status == 402:
+        raise attach_http_context(ProviderPaymentRequiredError(
+            f"{provider} payment required: {body}",
+            provider=provider,
+            user_message=(
+                "The configured OpenRouter route requires credits. "
+                "Use `openrouter/free` or add credits to the OpenRouter account."
+                if provider == "openrouter"
+                else f"The {provider} API requires credits for this request."
             ),
         ), status, body)
     if status == 404:

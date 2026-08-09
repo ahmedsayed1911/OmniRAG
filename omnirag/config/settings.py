@@ -122,7 +122,7 @@ class LLMSettings:
     exhaustive_max_output_tokens: int = 8192
     timeout_s: float = 90.0
     enable_multimodal: bool = True
-    max_images_per_answer: int = 4
+    max_images_per_answer: int = 3
 
     #: Ordered chain: index 0 is primary, the rest are fallbacks.
     endpoints: tuple[ProviderEndpoint, ...] = ()
@@ -130,6 +130,8 @@ class LLMSettings:
     #: Quick per-provider retries before failing over. Kept small so the
     #: Streamlit request never hangs behind a long backoff loop.
     retry_attempts: int = 2
+    openrouter_free_fallback: bool = True
+    rate_limit_cooldown_seconds: float = 60.0
 
     @property
     def effective_vision_model(self) -> str:
@@ -575,10 +577,16 @@ def _build_llm_settings() -> LLMSettings:
         ),
         timeout_s=_get_float("LLM_TIMEOUT_S", 90.0),
         enable_multimodal=_get_bool("LLM_ENABLE_MULTIMODAL", True),
-        max_images_per_answer=_get_int("MAX_IMAGES_PER_ANSWER", 4),
+        max_images_per_answer=_get_int(
+            "MAX_VISUALS_PER_QUERY", _get_int("MAX_IMAGES_PER_ANSWER", 3)
+        ),
         endpoints=endpoints,
         enable_fallback=_get_bool("ENABLE_PROVIDER_FALLBACK", True),
         retry_attempts=_get_int("LLM_RETRY_ATTEMPTS", 2),
+        openrouter_free_fallback=_get_bool("OPENROUTER_FREE_FALLBACK", True),
+        rate_limit_cooldown_seconds=_get_float(
+            "PROVIDER_RATE_LIMIT_COOLDOWN_SECONDS", 60.0
+        ),
     )
 
 
@@ -646,8 +654,8 @@ def _default_model(provider: str) -> str:
         "openai_compatible": "gpt-4o-mini",
         "anthropic": "claude-sonnet-4-5",
         "gemini": "gemini-3.6-flash",
-        # A multimodal default so visual evidence works out of the box.
-        "openrouter": "google/gemini-3.6-flash",
+        # Official dynamic free router; it filters by requested capabilities.
+        "openrouter": "openrouter/free",
         "mock": "mock-llm",
     }.get(provider, "gpt-4o-mini")
 

@@ -26,6 +26,8 @@ _PROVIDER_ENV = [
     "PRIMARY_LLM_PROVIDER", "FALLBACK_LLM_PROVIDER", "ENABLE_PROVIDER_FALLBACK",
     "GEMINI_API_KEY", "GEMINI_MODEL", "GOOGLE_API_KEY",
     "OPENROUTER_API_KEY", "OPENROUTER_MODEL", "OPENROUTER_MODEL_SUPPORTS_IMAGES",
+    "OPENROUTER_FREE_FALLBACK", "PROVIDER_RATE_LIMIT_COOLDOWN_SECONDS",
+    "MAX_VISUALS_PER_QUERY", "MAX_IMAGES_PER_ANSWER",
     "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "COHERE_API_KEY", "JINA_API_KEY",
     "EMBEDDING_PROVIDER", "EMBEDDING_API_KEY", "EMBEDDING_MODEL",
     "QDRANT_URL", "QDRANT_API_KEY", "QDRANT_COLLECTION",
@@ -345,7 +347,8 @@ class RecordingLLM:
         return True
 
     def complete(self, messages, *, system=None, temperature=None,
-                 max_output_tokens=None, model=None, json_mode=False):
+                 max_output_tokens=None, model=None, json_mode=False,
+                 requirements=None):
         from omnirag.providers.llm.base import LLMResponse
 
         self.calls.append(

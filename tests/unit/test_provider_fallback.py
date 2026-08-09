@@ -25,6 +25,7 @@ from omnirag.core.exceptions import (
     ProviderBadRequestError,
     ProviderCapabilityError,
     ProviderPolicyError,
+    ProviderPaymentRequiredError,
     ProviderTimeoutError,
     ProviderUnavailableError,
     RateLimitError,
@@ -39,6 +40,7 @@ from omnirag.providers.llm.openrouter import (
     model_supports_images,
 )
 from omnirag.providers.llm.router import FallbackLLMProvider
+from omnirag.providers.llm.context import llm_session
 
 
 # --------------------------------------------------------------------------- #
@@ -59,7 +61,8 @@ class ScriptedProvider(BaseLLMProvider):
         return self._images
 
     def complete(self, messages, *, system=None, temperature=None,
-                 max_output_tokens=None, model=None, json_mode=False):
+                 max_output_tokens=None, model=None, json_mode=False,
+                 requirements=None):
         self.call_count += 1
         outcome = self.outcomes.pop(0) if self.outcomes else "ok"
         if isinstance(outcome, BaseException):
@@ -252,6 +255,30 @@ class TestRouterFailover:
             router.complete(message())
         assert openrouter.call_count == 0
 
+    def test_rate_limit_cooldown_is_per_session_and_expires(self):
+        now = [100.0]
+        gemini = ScriptedProvider(
+            "gemini", outcomes=[RateLimitError("429", provider="gemini"), "recovered"]
+        )
+        fallback = ScriptedProvider("openrouter", outcomes=["s1 fallback", "s1 fallback 2"])
+        router = FallbackLLMProvider(
+            [gemini, fallback], rate_limit_cooldown_seconds=60, clock=lambda: now[0]
+        )
+
+        with llm_session("s1"):
+            assert router.complete(message()).provider == "openrouter"
+            assert router.complete(message()).provider == "openrouter"
+        assert gemini.call_count == 1
+
+        with llm_session("s2"):
+            assert router.complete(message()).provider == "gemini"
+        assert gemini.call_count == 2
+
+        now[0] += 61
+        gemini.outcomes.append("after cooldown")
+        with llm_session("s1"):
+            assert router.complete(message()).provider == "gemini"
+
 
 # --------------------------------------------------------------------------- #
 # Multimodal capability
@@ -292,6 +319,7 @@ class TestMultimodalCapability:
         "model,expected",
         [
             ("google/gemini-3.6-flash", True),
+            ("openrouter/free", True),
             ("openai/gpt-4o-mini", True),
             ("anthropic/claude-sonnet-4.5", True),
             ("mistralai/pixtral-12b", True),
@@ -393,10 +421,10 @@ class TestConfigurationCombinations:
         chain = {e.provider: e.model for e in settings.llm.configured_endpoints}
 
         assert GEMINI_DEFAULT_MODEL == "gemini-3.6-flash"
-        assert OPENROUTER_DEFAULT_MODEL == "google/gemini-3.6-flash"
+        assert OPENROUTER_DEFAULT_MODEL == "openrouter/free"
         assert chain == {
             "gemini": "gemini-3.6-flash",
-            "openrouter": "google/gemini-3.6-flash",
+            "openrouter": "openrouter/free",
         }
 
     def test_no_api_key_is_ever_hardcoded(self, monkeypatch):
@@ -554,6 +582,57 @@ class TestHTTPClassification:
             provider.complete(message())
         assert excinfo.value.status_code == 429
         assert excinfo.value.safe_body == "rate limit exceeded"
+
+    def test_openrouter_402_is_typed_payment_required(self):
+        self.responses = [FakeResponse(402, text="This request requires more credits")]
+        provider = OpenRouterLLM(
+            api_key="k", model="openrouter/free", retry_attempts=1
+        )
+        with pytest.raises(ProviderPaymentRequiredError) as excinfo:
+            provider.complete(message())
+        assert excinfo.value.status_code == 402
+        assert "free" in excinfo.value.user_message.lower()
+
+    def test_free_multimodal_route_unavailable_is_controlled(self):
+        self.responses = [FakeResponse(503, text="No endpoints found that support image input")]
+        provider = OpenRouterLLM(
+            api_key="k", model="openrouter/free", retry_attempts=1
+        )
+        with pytest.raises(ProviderCapabilityError) as excinfo:
+            provider.complete(message(with_image=True))
+        assert "free multimodal" in excinfo.value.user_message.lower()
+
+    def test_paid_model_402_retries_free_once(self):
+        self.responses = [
+            FakeResponse(402, text="Insufficient credits"),
+            FakeResponse(200, {
+                "model": "qwen/qwen-vl-plus:free",
+                "choices": [{"message": {"content": "free answer"}, "finish_reason": "stop"}],
+            }),
+        ]
+        provider = OpenRouterLLM(
+            api_key="k",
+            model="google/gemini-3.6-flash",
+            retry_attempts=1,
+            free_fallback=True,
+        )
+        response = provider.complete(message(with_image=True))
+        assert [request["json"]["model"] for request in self.requests] == [
+            "google/gemini-3.6-flash", "openrouter/free"
+        ]
+        assert response.model == "qwen/qwen-vl-plus:free"
+        assert response.fallback_used is True
+        assert response.diagnostics["openrouter_free_fallback"] is True
+        assert isinstance(self.requests[1]["json"]["messages"][0]["content"], list)
+
+    def test_structured_free_route_requires_parameter_support(self):
+        self.responses = [FakeResponse(200, {
+            "model": "free/model",
+            "choices": [{"message": {"content": "{}"}, "finish_reason": "stop"}],
+        })]
+        provider = OpenRouterLLM(api_key="k", model="openrouter/free", retry_attempts=1)
+        provider.complete(message(), json_mode=True)
+        assert self.requests[0]["json"]["provider"] == {"require_parameters": True}
 
 
 # --------------------------------------------------------------------------- #
