@@ -447,12 +447,34 @@ class Retriever:
         required_ids = {item.chunk.chunk_id for item in missing}
         recovered = list(missing[:final_k])
         used_chars = sum(len(item.chunk.text) for item in recovered)
+        covered_pages = {
+            (item.chunk.document_id, item.chunk.page_number) for item in recovered
+        }
+        # Required rows may consume the nominal character budget. Preserve one
+        # representative from every otherwise-missing page first so a combined
+        # "summarize + enumerate" request still sees the whole document. The
+        # hard context-count limit keeps this bounded.
+        for item in selected:
+            page = (item.chunk.document_id, item.chunk.page_number)
+            if (
+                item.chunk.chunk_id in required_ids
+                or page in covered_pages
+                or len(recovered) >= final_k
+            ):
+                continue
+            recovered.append(item)
+            covered_pages.add(page)
+            used_chars += len(item.chunk.text)
+        recovered_ids = {item.chunk.chunk_id for item in recovered}
         for item in selected:
             if item.chunk.chunk_id in required_ids or len(recovered) >= final_k:
+                continue
+            if item.chunk.chunk_id in recovered_ids:
                 continue
             if used_chars + len(item.chunk.text) > max_chars:
                 continue
             recovered.append(item)
+            recovered_ids.add(item.chunk.chunk_id)
             used_chars += len(item.chunk.text)
         return recovered
 

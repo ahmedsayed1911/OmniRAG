@@ -87,7 +87,7 @@ def test_small_document_scan_recovers_failures_across_all_pages(
         chunks,
         exhaustive_scan_max_chunks=120,
         exhaustive_final_k=24,
-        max_context_chars=50000,
+        max_context_chars=500,
     )
 
     result = retriever.retrieve(
@@ -103,6 +103,7 @@ def test_small_document_scan_recovers_failures_across_all_pages(
     assert all(case in text for case in ("TC02", "TC06", "TC10"))
     assert all(bug in text for bug in ("BUG-002", "BUG-010"))
     assert {2, 6, 9, 10, 11} <= {item.chunk.page_number for item in result.results}
+    assert result.unique_pages == 11
     assert sum(item.chunk.text == failures[2] for item in result.results) == 1
 
 
