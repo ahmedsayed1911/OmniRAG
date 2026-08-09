@@ -250,6 +250,99 @@ class TestGroqTransport:
         assert model_supports_images(DEFAULT_MODEL) is False
         assert model_supports_images("unknown/future-model") is False
 
+    def test_retry_after_ten_seconds_waits_once_then_succeeds(
+        self, groq_http, monkeypatch
+    ):
+        calls, responses = groq_http
+        sleeps = []
+        monkeypatch.setattr("omnirag.utils.retry.time.sleep", sleeps.append)
+        responses.extend(
+            [
+                FakeResponse(
+                    429,
+                    text="TPM limit reached; try again in 10s",
+                    headers={"retry-after": "10"},
+                ),
+                FakeResponse(
+                    200,
+                    {
+                        "model": DEFAULT_MODEL,
+                        "choices": [
+                            {"message": {"content": "ok"}, "finish_reason": "stop"}
+                        ],
+                    },
+                ),
+            ]
+        )
+        provider = GroqLLM(
+            api_key="test-key",
+            retry_attempts=2,
+            max_rate_limit_wait_seconds=20,
+        )
+
+        assert provider.complete(_messages()).text == "ok"
+        assert len(calls) == 2
+        assert sleeps == [10]
+
+    def test_retry_after_over_bound_fails_over_without_sleep(
+        self, groq_http, monkeypatch
+    ):
+        calls, responses = groq_http
+        sleeps = []
+        monkeypatch.setattr("omnirag.utils.retry.time.sleep", sleeps.append)
+        responses.append(
+            FakeResponse(
+                429,
+                text="TPM limit reached; try again in 30s",
+                headers={"retry-after": "30"},
+            )
+        )
+        groq = GroqLLM(
+            api_key="test-key",
+            retry_attempts=2,
+            max_rate_limit_wait_seconds=20,
+        )
+        fallback = ScriptedProvider("openrouter", ["fallback"])
+
+        response = FallbackLLMProvider([groq, fallback]).complete(_messages())
+
+        assert response.provider == "openrouter"
+        assert len(calls) == 1
+        assert sleeps == []
+
+    def test_router_logs_actual_groq_vision_model(self, groq_http, caplog):
+        _, responses = groq_http
+        responses.append(
+            FakeResponse(
+                200,
+                {
+                    "model": DEFAULT_VISION_MODEL,
+                    "choices": [
+                        {
+                            "message": {"content": "visual"},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                },
+            )
+        )
+        router = FallbackLLMProvider(
+            [GroqLLM(api_key="test-key", retry_attempts=1)]
+        )
+
+        with caplog.at_level("INFO"):
+            router.complete(_messages(image=True))
+
+        assert any(
+            f"provider=groq role=primary model={DEFAULT_VISION_MODEL}" in record.message
+            for record in caplog.records
+        )
+        assert any(
+            f"requested_model={DEFAULT_VISION_MODEL} "
+            f"response_model={DEFAULT_VISION_MODEL}" in record.message
+            for record in caplog.records
+        )
+
 
 class TestThreeProviderRouting:
     def test_gemini_success_does_not_call_fallbacks(self):

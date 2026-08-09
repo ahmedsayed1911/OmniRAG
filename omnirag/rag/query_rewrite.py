@@ -264,6 +264,7 @@ def expand_with_llm(
     llm: Optional[BaseLLMProvider],
     *,
     max_expansions: int = 3,
+    max_output_tokens: int = 256,
 ) -> QueryPlan:
     """Add model-generated paraphrases and a cross-lingual variant.
 
@@ -279,7 +280,7 @@ def expand_with_llm(
                 [LLMMessage(role=Role.USER, text=f"Question: {plan.normalized}")],
                 system=SYSTEM_PROMPT,
                 temperature=0.0,
-                max_output_tokens=320,
+                max_output_tokens=max_output_tokens,
                 json_mode=True,
             )
     except ProviderError as exc:

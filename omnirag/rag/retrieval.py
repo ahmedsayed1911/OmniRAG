@@ -94,7 +94,12 @@ class Retriever:
             and self.llm is not None
             and not plan.page_filter
         ):
-            plan = expand_with_llm(plan, self.llm, max_expansions=cfg.max_expansions)
+            plan = expand_with_llm(
+                plan,
+                self.llm,
+                max_expansions=cfg.max_expansions,
+                max_output_tokens=cfg.query_rewrite_max_output_tokens,
+            )
         elif plan.page_filter:
             plan.notes.append("Skipped LLM query rewrite for an explicit page constraint.")
         timings["plan_ms"] = (time.perf_counter() - started) * 1000

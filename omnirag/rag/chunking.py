@@ -228,6 +228,10 @@ class Chunker:
             confidence=block.confidence,
             uncertain=block.uncertain,
             token_estimate=estimate_tokens(text),
+            metadata={
+                **dict(block.metadata),
+                "document_hash": document.content_hash,
+            },
         )
 
     def _flush(self, document: Document, acc: _Accumulator) -> List[Chunk]:
@@ -272,6 +276,7 @@ class Chunker:
                     confidence=acc.confidence,
                     uncertain=acc.uncertain,
                     token_estimate=estimate_tokens(body),
+                    metadata={"document_hash": document.content_hash},
                 )
             )
 

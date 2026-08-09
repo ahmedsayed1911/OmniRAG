@@ -139,10 +139,14 @@ class RateLimitError(ProviderError):
         provider: str = "",
         retry_after: float | None = None,
         quota_exhausted: bool = False,
+        quota_scope: str = "temporary",
+        reset_at: str = "",
     ):
         super().__init__(detail, provider=provider, retryable=not quota_exhausted)
         self.retry_after = retry_after
         self.quota_exhausted = quota_exhausted
+        self.quota_scope = quota_scope
+        self.reset_at = reset_at
 
 
 class ProviderAuthError(ProviderError):

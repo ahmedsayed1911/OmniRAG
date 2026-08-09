@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import threading
 import time
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -91,7 +92,9 @@ class FallbackLLMProvider(BaseLLMProvider):
         *,
         enable_fallback: bool = True,
         rate_limit_cooldown_seconds: float = 60.0,
+        hard_quota_cooldown_seconds: float = 3600.0,
         clock=time.monotonic,
+        wall_clock=time.time,
     ):
         active = [p for p in providers if p is not None]
         if not active:
@@ -109,7 +112,9 @@ class FallbackLLMProvider(BaseLLMProvider):
         self.stats = RouterStats()
         self._lock = threading.Lock()
         self.rate_limit_cooldown_seconds = max(0.0, rate_limit_cooldown_seconds)
+        self.hard_quota_cooldown_seconds = max(0.0, hard_quota_cooldown_seconds)
         self._clock = clock
+        self._wall_clock = wall_clock
         self._rate_limit_cooldowns: Dict[tuple[str, str], float] = {}
 
     # ------------------------------------------------------------------ #
@@ -166,10 +171,11 @@ class FallbackLLMProvider(BaseLLMProvider):
         cooldown_failures: List[tuple[str, BaseException]] = []
 
         for index, provider in enumerate(self.chain):
+            target_model = provider.model_for_request(messages, model)
             if self._cooldown_active(session_id, provider.name):
                 attempts.append(ProviderAttempt(
                     provider=provider.name,
-                    model=model or provider.model,
+                    model=target_model,
                     operation=operation,
                     outcome="skipped",
                     failure_class="rate_limit_cooldown",
@@ -191,28 +197,28 @@ class FallbackLLMProvider(BaseLLMProvider):
                 )
                 continue
             # -- capability gate: never silently drop visual evidence -------- #
-            if needs_images and not provider.supports_images(model):
+            if needs_images and not provider.supports_images(target_model):
                 logger.info(
                     "Skipping %s for a multimodal request: model %s has no image support",
                     provider.name,
-                    model or provider.model,
+                    target_model,
                 )
                 attempts.append(
                     ProviderAttempt(
                         provider=provider.name,
-                        model=model or provider.model,
+                        model=target_model,
                         operation=operation,
                         outcome="skipped",
                         failure_class=FailureClass.CAPABILITY.value,
                     )
                 )
                 capability_error = ProviderCapabilityError(
-                    f"{provider.name} model '{model or provider.model}' cannot read images",
+                    f"{provider.name} model '{target_model}' cannot read images",
                     provider=provider.name,
                     capability="images",
                     user_message=(
                         f"The configured {provider.name} model "
-                        f"`{model or provider.model}` cannot read images, so the visual "
+                        f"`{target_model}` cannot read images, so the visual "
                         "evidence for this question could not be analysed. Configure a "
                         "vision-capable model to use OmniRAG's multimodal features."
                     ),
@@ -226,7 +232,7 @@ class FallbackLLMProvider(BaseLLMProvider):
                 operation,
                 provider.name,
                 role,
-                model or provider.model,
+                target_model,
                 getattr(provider, "base_url", "local"),
                 ", multimodal" if needs_images else "",
             )
@@ -246,7 +252,7 @@ class FallbackLLMProvider(BaseLLMProvider):
                 attempts.append(
                     ProviderAttempt(
                         provider=provider.name,
-                        model=model or provider.model,
+                        model=target_model,
                         operation=operation,
                         outcome="failed",
                         failure_class=failure.value,
@@ -257,17 +263,22 @@ class FallbackLLMProvider(BaseLLMProvider):
                 failures.append((provider.name, exc))
 
                 if isinstance(exc, RateLimitError):
-                    self._start_cooldown(session_id, provider.name)
+                    self._start_cooldown(session_id, provider.name, exc)
 
                 logger.warning(
                     "LLM operation=%s provider=%s model=%s status=%s "
-                    "classified_error=%s failure_class=%s body=%s",
+                    "classified_error=%s failure_class=%s quota_scope=%s "
+                    "retry_after=%s remaining=%s reset=%s body=%s",
                     operation,
                     provider.name,
-                    model or provider.model,
+                    target_model,
                     getattr(exc, "status_code", "n/a"),
                     type(exc).__name__,
                     failure.value,
+                    getattr(exc, "quota_scope", "n/a"),
+                    getattr(exc, "retry_after", "n/a"),
+                    getattr(exc, "rate_limit_remaining", "n/a"),
+                    getattr(exc, "rate_limit_reset", "n/a"),
                     getattr(exc, "safe_body", "<unavailable>"),
                 )
 
@@ -310,11 +321,23 @@ class FallbackLLMProvider(BaseLLMProvider):
                     duration_ms=elapsed,
                 )
             )
-            logger.info("%s request succeeded in %.0f ms", provider.name, elapsed)
+            logger.info(
+                "LLM operation=%s provider=%s requested_model=%s "
+                "response_model=%s status=ok duration_ms=%.0f",
+                operation,
+                provider.name,
+                target_model,
+                response.model or target_model,
+                elapsed,
+            )
 
             response.provider = response.provider or provider.name
             response.fallback_used = response.fallback_used or index > 0
             response.diagnostics.setdefault("fallback_position", index)
+            response.diagnostics.setdefault("requested_model", target_model)
+            response.diagnostics.setdefault(
+                "response_model", response.model or target_model
+            )
             response.attempts = [str(a) for a in attempts]
             self._record(response, failover=index > 0)
             return response
@@ -334,7 +357,10 @@ class FallbackLLMProvider(BaseLLMProvider):
         raise AllProvidersFailedError(failures)
 
     def _cooldown_active(self, session_id: str, provider: str) -> bool:
-        if not session_id or self.rate_limit_cooldown_seconds <= 0:
+        if not session_id or (
+            self.rate_limit_cooldown_seconds <= 0
+            and self.hard_quota_cooldown_seconds <= 0
+        ):
             return False
         key = (session_id, provider)
         with self._lock:
@@ -344,13 +370,44 @@ class FallbackLLMProvider(BaseLLMProvider):
                 return False
             return True
 
-    def _start_cooldown(self, session_id: str, provider: str) -> None:
-        if not session_id or self.rate_limit_cooldown_seconds <= 0:
+    def _start_cooldown(
+        self, session_id: str, provider: str, exc: RateLimitError
+    ) -> None:
+        if not session_id:
             return
+        duration = self.rate_limit_cooldown_seconds
+        if exc.quota_exhausted:
+            duration = (
+                self._reset_duration(exc.reset_at)
+                or self.hard_quota_cooldown_seconds
+            )
+        elif exc.retry_after is not None:
+            duration = max(duration, float(exc.retry_after))
         with self._lock:
             self._rate_limit_cooldowns[(session_id, provider)] = (
-                self._clock() + self.rate_limit_cooldown_seconds
+                self._clock() + duration
             )
+
+    def _reset_duration(self, value: str) -> float:
+        raw = (value or "").strip()
+        if not raw:
+            return 0.0
+        try:
+            numeric = float(raw)
+            if numeric > 10_000_000_000:  # epoch milliseconds
+                numeric /= 1000.0
+            if numeric > 1_000_000_000:  # epoch seconds
+                return max(1.0, numeric - self._wall_clock())
+            return max(1.0, numeric)  # relative seconds
+        except ValueError:
+            pass
+        try:
+            reset = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            if reset.tzinfo is None:
+                reset = reset.replace(tzinfo=timezone.utc)
+            return max(1.0, reset.timestamp() - self._wall_clock())
+        except ValueError:
+            return 0.0
 
     # ------------------------------------------------------------------ #
     def _record(self, response: LLMResponse, *, failover: bool) -> None:

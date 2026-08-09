@@ -49,6 +49,10 @@ def _signature(cfg: LLMSettings) -> str:
         str(cfg.max_output_tokens),
         str(cfg.openrouter_free_fallback),
         str(cfg.rate_limit_cooldown_seconds),
+        str(cfg.hard_quota_cooldown_seconds),
+        str(cfg.groq_max_rate_limit_wait_seconds),
+        str(cfg.groq_tpm_limit),
+        str(cfg.groq_estimated_image_tokens),
     ]
     parts.extend(
         ":".join(
@@ -98,6 +102,9 @@ def build_endpoint_provider(
     if provider == "groq":
         return GroqLLM(
             supports_images_override=endpoint.supports_images,
+            max_rate_limit_wait_seconds=cfg.groq_max_rate_limit_wait_seconds,
+            tpm_limit=cfg.groq_tpm_limit,
+            estimated_image_tokens=cfg.groq_estimated_image_tokens,
             **common,
         )
     if provider == "openrouter":
@@ -159,6 +166,7 @@ def build_llm_provider(cfg: LLMSettings) -> BaseLLMProvider:
         providers,
         enable_fallback=cfg.enable_fallback,
         rate_limit_cooldown_seconds=cfg.rate_limit_cooldown_seconds,
+        hard_quota_cooldown_seconds=cfg.hard_quota_cooldown_seconds,
     )
     logger.info(
         "LLM chain ready: %s (fallback %s)",

@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Optional, Sequence
 
+from omnirag.core.exceptions import RateLimitError
+from omnirag.providers.llm.base import LLMMessage, LLMRequestRequirements, LLMResponse
 from omnirag.providers.llm.openai_compat import OpenAICompatibleLLM
+from omnirag.utils.logging import get_logger
+from omnirag.utils.text import estimate_tokens
+
+logger = get_logger(__name__)
 
 DEFAULT_BASE_URL = "https://api.groq.com/openai/v1"
 DEFAULT_MODEL = "openai/gpt-oss-20b"
@@ -37,6 +43,9 @@ class GroqLLM(OpenAICompatibleLLM):
         vision_model: str = DEFAULT_VISION_MODEL,
         retry_attempts: int = 2,
         supports_images_override: Optional[bool] = None,
+        max_rate_limit_wait_seconds: float = 20.0,
+        tpm_limit: int = 8000,
+        estimated_image_tokens: int = 1024,
     ) -> None:
         super().__init__(
             api_key=api_key,
@@ -49,12 +58,68 @@ class GroqLLM(OpenAICompatibleLLM):
             retry_attempts=retry_attempts,
         )
         self._supports_images_override = supports_images_override
+        self.retry_max_delay = max(0.0, max_rate_limit_wait_seconds)
+        self.skip_if_retry_after_exceeds_max = True
+        self.tpm_limit = max(0, tpm_limit)
+        self.estimated_image_tokens = max(0, estimated_image_tokens)
         self.supports_vision = self.supports_images()
 
     def supports_images(self, model: Optional[str] = None) -> bool:
         if self._supports_images_override is not None:
             return self._supports_images_override
         return model_supports_images(model or self.vision_model)
+
+    def complete(
+        self,
+        messages: Sequence[LLMMessage],
+        *,
+        system: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_output_tokens: Optional[int] = None,
+        model: Optional[str] = None,
+        json_mode: bool = False,
+        requirements: Optional[LLMRequestRequirements] = None,
+    ) -> LLMResponse:
+        requested = max_output_tokens or self.max_output_tokens
+        input_estimate = estimate_tokens(system or "") + sum(
+            estimate_tokens(message.text)
+            + len(message.images) * self.estimated_image_tokens
+            for message in messages
+        )
+        effective = requested
+        if self.tpm_limit:
+            available = self.tpm_limit - input_estimate - 128
+            if available < 128:
+                raise RateLimitError(
+                    "Groq request skipped before HTTP: estimated input exceeds TPM window",
+                    provider=self.name,
+                )
+            effective = min(requested, max(128, available))
+            if effective < requested:
+                if requested > self.max_output_tokens:
+                    raise RateLimitError(
+                        "Groq request skipped before HTTP: exhaustive output budget "
+                        "does not fit the estimated TPM window",
+                        provider=self.name,
+                    )
+                logger.info(
+                    "LLM operation=%s provider=groq token_budget requested=%d "
+                    "input_estimate=%d effective=%d tpm_limit=%d",
+                    requirements.operation if requirements else "unspecified",
+                    requested,
+                    input_estimate,
+                    effective,
+                    self.tpm_limit,
+                )
+        return super().complete(
+            messages,
+            system=system,
+            temperature=temperature,
+            max_output_tokens=effective,
+            model=model,
+            json_mode=json_mode,
+            requirements=requirements,
+        )
 
 
 __all__ = [

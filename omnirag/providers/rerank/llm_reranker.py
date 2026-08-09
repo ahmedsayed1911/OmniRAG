@@ -38,10 +38,18 @@ Rules:
 class LLMReranker(BaseReranker):
     name = "llm"
 
-    def __init__(self, llm: BaseLLMProvider, *, top_n: int = 8, max_candidates: int = MAX_CANDIDATES):
+    def __init__(
+        self,
+        llm: BaseLLMProvider,
+        *,
+        top_n: int = 8,
+        max_candidates: int = MAX_CANDIDATES,
+        max_output_tokens: int = 256,
+    ):
         super().__init__(model=getattr(llm, "model", "llm"), top_n=top_n)
         self.llm = llm
         self.max_candidates = max_candidates
+        self.max_output_tokens = max_output_tokens
 
     def rerank(
         self, query: str, candidates: Sequence[RerankCandidate], *, top_n: int | None = None
@@ -61,7 +69,7 @@ class LLMReranker(BaseReranker):
                     [LLMMessage(role=Role.USER, text=prompt)],
                     system=SYSTEM_PROMPT,
                     temperature=0.0,
-                    max_output_tokens=900,
+                    max_output_tokens=self.max_output_tokens,
                     json_mode=True,
                 )
         except ProviderError as exc:

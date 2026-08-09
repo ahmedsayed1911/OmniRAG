@@ -353,6 +353,7 @@ class Chunk(OmniModel):
             "visual_asset_id": self.visual.asset_id if self.visual else None,
             "visual_media_type": self.visual.media_type if self.visual else None,
             "visual_origin": self.visual.origin if self.visual else None,
+            "metadata": dict(self.metadata),
         }
 
     @classmethod
@@ -384,6 +385,7 @@ class Chunk(OmniModel):
             order=int(payload.get("order", 0)),
             token_estimate=int(payload.get("token_estimate", 0)),
             visual=visual,
+            metadata=dict(payload.get("metadata") or {}),
         )
 
 

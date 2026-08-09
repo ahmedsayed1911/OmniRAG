@@ -37,6 +37,7 @@ from omnirag.providers.llm.context import generation_context, llm_operation
 from omnirag.rag.citations import build_citations, verify_and_clean
 from omnirag.rag.query_rewrite import QueryPlan
 from omnirag.storage.files import FileStore
+from omnirag.intelligence.vision import VisionAnalyzer
 from omnirag.utils.language import language_name
 from omnirag.utils.hashing import short_hash
 from omnirag.utils.logging import get_logger
@@ -109,10 +110,12 @@ class AnswerGenerator:
         llm: BaseLLMProvider,
         *,
         file_store: Optional[FileStore] = None,
+        vision: Optional[VisionAnalyzer] = None,
         settings: Optional[AppSettings] = None,
     ):
         self.llm = llm
         self.file_store = file_store
+        self.vision = vision
         self.settings = settings or get_settings()
 
     # ------------------------------------------------------------------ #
@@ -122,8 +125,10 @@ class AnswerGenerator:
             return self._no_evidence_answer(request)
 
         citations = build_citations(results)
-        context_text = self._format_context(results, citations)
         images = self._collect_images(results, citations, request.plan)
+        self._enrich_lazy_visuals(results, citations, images, request.plan)
+        citations = build_citations(results)
+        context_text = self._format_context(results, citations)
 
         messages = self._build_messages(request, context_text, images)
         active_messages = messages
@@ -494,6 +499,51 @@ COMPREHENSIVE MODE
                 )
             )
         return out
+
+    def _enrich_lazy_visuals(
+        self,
+        results: Sequence[SearchResult],
+        citations: Sequence[Citation],
+        images: Sequence[Tuple[int, ImagePart]],
+        plan: Optional[QueryPlan],
+    ) -> None:
+        """Understand at most one canonical image for each retrieved page.
+
+        The combined vision result contains both transcription and semantic
+        description. It enriches only this request's context; the content-hash
+        cache makes later questions and Streamlit reruns reuse it.
+        """
+        if not self.settings.vision.lazy_analysis or self.vision is None:
+            return
+        if plan is not None and not (plan.wants_visual or plan.page_filter):
+            return
+
+        by_citation = {
+            citation.index: result
+            for citation, result in zip(citations, results)
+        }
+        seen_pages: set[tuple[str, int]] = set()
+        for citation_index, image in images:
+            result = by_citation.get(citation_index)
+            if result is None:
+                continue
+            chunk = result.chunk
+            page_key = (chunk.document_id, chunk.page_number)
+            if page_key in seen_pages:
+                continue
+            seen_pages.add(page_key)
+            analysis = self.vision.analyze(
+                image.data,
+                expect=chunk.block_type if chunk.block_type.is_visual else None,
+                skip_decorative_check=True,
+                document_id=chunk.document_id,
+                document_hash=str(chunk.metadata.get("document_hash") or ""),
+                page_number=chunk.page_number,
+            )
+            if analysis.ok and analysis.searchable_text not in chunk.text:
+                chunk.text = f"{chunk.text}\n\n{analysis.searchable_text}".strip()
+                chunk.metadata["visual_analysis_pending"] = False
+                chunk.metadata["visual_analysis_cached"] = True
 
     def _build_messages(
         self,

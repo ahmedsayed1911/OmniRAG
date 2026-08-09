@@ -58,6 +58,13 @@ class GeminiLLM(BaseLLMProvider):
         target = (model or self.vision_model or self.model).lower()
         return not any(hint in target for hint in _TEXT_ONLY_HINTS)
 
+    def model_for_request(
+        self, messages: Sequence[LLMMessage], model: Optional[str] = None
+    ) -> str:
+        return model or (
+            self.vision_model if any(message.has_images for message in messages) else self.model
+        )
+
     def complete(
         self,
         messages: Sequence[LLMMessage],
@@ -70,7 +77,7 @@ class GeminiLLM(BaseLLMProvider):
         requirements: Optional[LLMRequestRequirements] = None,
     ) -> LLMResponse:
         has_images = any(m.has_images for m in messages)
-        target_model = model or (self.vision_model if has_images else self.model)
+        target_model = self.model_for_request(messages, model)
 
         generation_config: Dict[str, Any] = {
             "maxOutputTokens": max_output_tokens or self.max_output_tokens,

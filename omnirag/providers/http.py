@@ -7,6 +7,7 @@ tell a transient 429/503 from a permanent 401.
 
 from __future__ import annotations
 
+import re
 import threading
 from typing import Any, Dict, Optional
 
@@ -118,13 +119,25 @@ def _handle_response(response: Any, *, provider: str) -> Dict[str, Any]:
     body = _safe_body(response)
 
     if status == 429:
-        retry_after = response.headers.get("retry-after")
-        raise attach_http_context(RateLimitError(
-            f"{provider} rate limited: {body}",
-            provider=provider,
-            retry_after=float(retry_after) if _is_number(retry_after) else None,
-            quota_exhausted=is_quota_exhausted(body),
-        ), status, body)
+        retry_after = _retry_after_seconds(response.headers.get("retry-after"), body)
+        remaining = response.headers.get("x-ratelimit-remaining", "")
+        reset = response.headers.get("x-ratelimit-reset", "")
+        exhausted = is_quota_exhausted(body) or str(remaining).strip() == "0"
+        quota_scope = _quota_scope(body, exhausted=exhausted, reset=reset)
+        raise attach_http_context(
+            RateLimitError(
+                f"{provider} rate limited: {body}",
+                provider=provider,
+                retry_after=retry_after,
+                quota_exhausted=exhausted,
+                quota_scope=quota_scope,
+                reset_at=str(reset or ""),
+            ),
+            status,
+            body,
+            rate_limit_remaining=str(remaining or ""),
+            rate_limit_reset=str(reset or ""),
+        )
     if status in (408, 504):
         raise attach_http_context(
             ProviderTimeoutError(f"{provider} timeout ({status}): {body}", provider=provider),
@@ -173,10 +186,19 @@ def _handle_response(response: Any, *, provider: str) -> Dict[str, Any]:
     ), status, body)
 
 
-def attach_http_context(exc: Exception, status: int, body: str) -> Exception:
+def attach_http_context(
+    exc: Exception,
+    status: int,
+    body: str,
+    *,
+    rate_limit_remaining: str = "",
+    rate_limit_reset: str = "",
+) -> Exception:
     """Attach bounded, credential-redacted-at-log-time HTTP diagnostics."""
     setattr(exc, "status_code", int(status))
     setattr(exc, "safe_body", " ".join((body or "").split())[:400])
+    setattr(exc, "rate_limit_remaining", rate_limit_remaining[:40])
+    setattr(exc, "rate_limit_reset", rate_limit_reset[:80])
     return exc
 
 
@@ -197,6 +219,30 @@ _QUOTA_MARKERS = (
 def is_quota_exhausted(body: str) -> bool:
     lowered = body.lower()
     return any(marker in lowered for marker in _QUOTA_MARKERS)
+
+
+def _retry_after_seconds(header: Optional[str], body: str) -> Optional[float]:
+    if _is_number(header):
+        return max(0.0, float(header))  # type: ignore[arg-type]
+    match = re.search(
+        r"(?:try again in|retry(?:ing)?(?: after| in)?)\s*([0-9]+(?:\.[0-9]+)?)\s*s",
+        body or "",
+        re.IGNORECASE,
+    )
+    return float(match.group(1)) if match else None
+
+
+def _quota_scope(body: str, *, exhausted: bool, reset: str) -> str:
+    lowered = (body or "").lower()
+    if "tokens per minute" in lowered or " tpm" in lowered:
+        return "minute_tpm"
+    if "requests per minute" in lowered or " rpm" in lowered:
+        return "minute_rpm"
+    if reset and exhausted:
+        return "daily_or_account"
+    if exhausted:
+        return "hard_quota"
+    return "temporary_rate"
 
 
 def _safe_body(response: Any, limit: int = 400) -> str:

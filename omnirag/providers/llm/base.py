@@ -96,6 +96,12 @@ class BaseLLMProvider(ABC):
         """
         return self.supports_vision
 
+    def model_for_request(
+        self, messages: Sequence[LLMMessage], model: Optional[str] = None
+    ) -> str:
+        """Return the exact model identifier this request will send."""
+        return model or self.model
+
     @abstractmethod
     def complete(
         self,

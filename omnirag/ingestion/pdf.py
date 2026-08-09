@@ -370,7 +370,12 @@ class PDFProcessor(BaseDocumentProcessor):
         ocr_text = ""
         confidence = None
         uncertain = False
-        if ctx.ocr_available:
+        lazy_vision_ocr = (
+            ctx.settings.vision.lazy_analysis
+            and ctx.ocr is not None
+            and ctx.ocr.name == "vision"
+        )
+        if ctx.ocr_available and not lazy_vision_ocr:
             result = ctx.ocr.recognize(image)  # type: ignore[union-attr]
             if result.ok:
                 ocr_text = result.text
@@ -378,7 +383,7 @@ class PDFProcessor(BaseDocumentProcessor):
                 uncertain = result.uncertain
             elif result.error:
                 ctx.warn(f"Page {page.page_number}: {result.error}")
-        else:
+        elif not lazy_vision_ocr:
             ctx.warn(
                 f"Page {page.page_number} appears to be scanned but no OCR "
                 "provider is available."

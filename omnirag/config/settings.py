@@ -121,8 +121,8 @@ class LLMSettings:
     model: str = "gemini-3.6-flash"
     vision_model: str = ""
     temperature: float = 0.1
-    max_output_tokens: int = 4096
-    exhaustive_max_output_tokens: int = 8192
+    max_output_tokens: int = 2048
+    exhaustive_max_output_tokens: int = 4096
     timeout_s: float = 90.0
     enable_multimodal: bool = True
     max_images_per_answer: int = 3
@@ -135,6 +135,10 @@ class LLMSettings:
     retry_attempts: int = 2
     openrouter_free_fallback: bool = True
     rate_limit_cooldown_seconds: float = 60.0
+    hard_quota_cooldown_seconds: float = 3600.0
+    groq_max_rate_limit_wait_seconds: float = 20.0
+    groq_tpm_limit: int = 8000
+    groq_estimated_image_tokens: int = 1024
 
     @property
     def effective_vision_model(self) -> str:
@@ -226,6 +230,7 @@ class OCRSettings:
     tesseract_cmd: str = ""
     min_confidence: float = 0.35
     timeout_s: float = 60.0
+    max_output_tokens: int = 1200
 
 
 @dataclass(frozen=True)
@@ -237,6 +242,8 @@ class VisionSettings:
     page_render_dpi: int = 170
     jpeg_quality: int = 82
     describe_page_snapshots: bool = True
+    lazy_analysis: bool = True
+    analysis_max_output_tokens: int = 800
 
 
 @dataclass(frozen=True)
@@ -261,6 +268,8 @@ class RetrievalSettings:
     max_context_chars: int = 22000
     exhaustive_scan_max_chunks: int = 120
     exhaustive_final_k: int = 24
+    query_rewrite_max_output_tokens: int = 256
+    rerank_max_output_tokens: int = 256
 
 
 @dataclass(frozen=True)
@@ -439,6 +448,7 @@ def build_settings() -> AppSettings:
         tesseract_cmd=_get("TESSERACT_CMD"),
         min_confidence=_get_float("OCR_MIN_CONFIDENCE", 0.35),
         timeout_s=_get_float("OCR_TIMEOUT_S", 60.0),
+        max_output_tokens=_get_int("VISION_OCR_MAX_TOKENS", 1200),
     )
 
     vision = VisionSettings(
@@ -449,6 +459,8 @@ def build_settings() -> AppSettings:
         page_render_dpi=_get_int("PAGE_RENDER_DPI", 170),
         jpeg_quality=_get_int("IMAGE_JPEG_QUALITY", 82),
         describe_page_snapshots=_get_bool("DESCRIBE_PAGE_SNAPSHOTS", True),
+        lazy_analysis=_get_bool("VISION_LAZY_ANALYSIS", True),
+        analysis_max_output_tokens=_get_int("VISION_ANALYSIS_MAX_TOKENS", 800),
     )
 
     chunking = ChunkingSettings(
@@ -476,6 +488,8 @@ def build_settings() -> AppSettings:
         max_context_chars=_get_int("MAX_CONTEXT_CHARS", 22000),
         exhaustive_scan_max_chunks=_get_int("EXHAUSTIVE_SCAN_MAX_CHUNKS", 120),
         exhaustive_final_k=_get_int("EXHAUSTIVE_FINAL_K", 24),
+        query_rewrite_max_output_tokens=_get_int("QUERY_REWRITE_MAX_TOKENS", 256),
+        rerank_max_output_tokens=_get_int("RERANK_MAX_TOKENS", 256),
     )
 
     upload = UploadSettings(
@@ -594,9 +608,9 @@ def _build_llm_settings() -> LLMSettings:
         model=primary.model,
         vision_model=primary.vision_model,
         temperature=_get_float("LLM_TEMPERATURE", 0.1),
-        max_output_tokens=_get_int("LLM_MAX_OUTPUT_TOKENS", 4096),
+        max_output_tokens=_get_int("LLM_MAX_OUTPUT_TOKENS", 2048),
         exhaustive_max_output_tokens=_get_int(
-            "LLM_EXHAUSTIVE_MAX_OUTPUT_TOKENS", 8192
+            "LLM_EXHAUSTIVE_MAX_OUTPUT_TOKENS", 4096
         ),
         timeout_s=_get_float("LLM_TIMEOUT_S", 90.0),
         enable_multimodal=_get_bool("LLM_ENABLE_MULTIMODAL", True),
@@ -609,6 +623,16 @@ def _build_llm_settings() -> LLMSettings:
         openrouter_free_fallback=_get_bool("OPENROUTER_FREE_FALLBACK", True),
         rate_limit_cooldown_seconds=_get_float(
             "PROVIDER_RATE_LIMIT_COOLDOWN_SECONDS", 60.0
+        ),
+        hard_quota_cooldown_seconds=_get_float(
+            "PROVIDER_HARD_QUOTA_COOLDOWN_SECONDS", 3600.0
+        ),
+        groq_max_rate_limit_wait_seconds=_get_float(
+            "GROQ_MAX_RATE_LIMIT_WAIT_SECONDS", 20.0
+        ),
+        groq_tpm_limit=_get_int("GROQ_TPM_LIMIT", 8000),
+        groq_estimated_image_tokens=_get_int(
+            "GROQ_ESTIMATED_IMAGE_TOKENS", 1024
         ),
     )
 

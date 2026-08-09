@@ -80,6 +80,7 @@ def _vision_or_null(settings: AppSettings) -> BaseOCRProvider:
         llm,
         languages=settings.ocr.languages,
         min_confidence=settings.ocr.min_confidence,
+        max_output_tokens=settings.ocr.max_output_tokens,
     )
     if not provider.is_available():
         logger.warning(

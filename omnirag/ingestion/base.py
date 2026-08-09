@@ -244,7 +244,8 @@ class BaseDocumentProcessor(ABC):
             return None
 
         analysis: Optional[VisualAnalysis] = None
-        if ctx.vision_available:
+        lazy_analysis = ctx.settings.vision.lazy_analysis
+        if ctx.vision_available and not lazy_analysis:
             if ctx.consume_visual_budget():
                 analysis = ctx.vision.analyze(  # type: ignore[union-attr]
                     image,
@@ -259,7 +260,7 @@ class BaseDocumentProcessor(ABC):
                     "Visual analysis budget reached for this document — some "
                     "images were indexed without a description."
                 )
-        elif ctx.vision is not None and not ctx.vision.available:
+        elif not lazy_analysis and ctx.vision is not None and not ctx.vision.available:
             ctx.warn(
                 "Visual understanding is unavailable (no image-capable model "
                 "configured), so charts and diagrams were not described."
@@ -287,6 +288,7 @@ class BaseDocumentProcessor(ABC):
                 visual=visual,
                 uncertain=True,
                 order=ctx.next_order(),
+                metadata={"visual_analysis_pending": lazy_analysis},
             )
 
         block_type = expect or analysis.block_type

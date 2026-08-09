@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from omnirag.core.enums import BlockType, FileType, SourceKind
@@ -256,6 +258,10 @@ class TestImageProcessor:
                 )
 
         context.vision = FakeVision()
+        context.settings = replace(
+            context.settings,
+            vision=replace(context.settings.vision, lazy_analysis=False),
+        )
         context.filename = "chart.png"
         document = ImageProcessor().parse(sample_png, context)
 

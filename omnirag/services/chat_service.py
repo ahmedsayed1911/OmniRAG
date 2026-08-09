@@ -220,7 +220,10 @@ class ChatService:
                 "answer generation",
             )
         return AnswerGenerator(
-            llm, file_store=self.engine.file_store, settings=self.settings
+            llm,
+            file_store=self.engine.file_store,
+            vision=self.engine.vision,
+            settings=self.settings,
         )
 
     def _last_provider(self) -> str:

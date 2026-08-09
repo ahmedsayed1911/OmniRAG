@@ -64,7 +64,11 @@ def build_reranker(
     if provider == "llm":
         llm = _try_llm(settings)
         if llm is not None:
-            return LLMReranker(llm, top_n=top_n)
+            return LLMReranker(
+                llm,
+                top_n=top_n,
+                max_output_tokens=(settings or get_settings()).retrieval.rerank_max_output_tokens,
+            )
         return HeuristicReranker(top_n=top_n)
 
     # --- auto ---------------------------------------------------------- #
@@ -82,7 +86,11 @@ def build_reranker(
 
     llm = _try_llm(settings)
     if llm is not None:
-        return LLMReranker(llm, top_n=top_n)
+        return LLMReranker(
+            llm,
+            top_n=top_n,
+            max_output_tokens=(settings or get_settings()).retrieval.rerank_max_output_tokens,
+        )
 
     return HeuristicReranker(top_n=top_n)
 

@@ -63,6 +63,13 @@ class OpenAICompatibleLLM(BaseLLMProvider):
         self.retry_attempts = max(1, retry_attempts)
         self.supports_vision = not any(h in model.lower() for h in _TEXT_ONLY_HINTS)
 
+    def model_for_request(
+        self, messages: Sequence[LLMMessage], model: Optional[str] = None
+    ) -> str:
+        return model or (
+            self.vision_model if any(message.has_images for message in messages) else self.model
+        )
+
     def supports_images(self, model: Optional[str] = None) -> bool:
         target = (model or self.vision_model or self.model).lower()
         return not any(hint in target for hint in _TEXT_ONLY_HINTS)
@@ -80,7 +87,7 @@ class OpenAICompatibleLLM(BaseLLMProvider):
         requirements: Optional[LLMRequestRequirements] = None,
     ) -> LLMResponse:
         has_images = any(m.has_images for m in messages)
-        target_model = model or (self.vision_model if has_images else self.model)
+        target_model = self.model_for_request(messages, model)
 
         payload: Dict[str, Any] = {
             "model": target_model,
@@ -113,7 +120,10 @@ class OpenAICompatibleLLM(BaseLLMProvider):
             _call,
             attempts=self.retry_attempts,
             operation=f"{self.name}/chat-completions ({target_model})",
-            max_delay=2.0,
+            max_delay=getattr(self, "retry_max_delay", 2.0),
+            skip_if_retry_after_exceeds_max=getattr(
+                self, "skip_if_retry_after_exceeds_max", False
+            ),
         )
         response = self._parse(body, target_model)
         response.diagnostics.update(diagnostics)

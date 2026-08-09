@@ -389,10 +389,13 @@ fallback variables remain supported.
 | `OPENROUTER_API_KEY` / `OPENROUTER_MODEL` | — / `openrouter/free` | Fallback credentials and dynamic free route |
 | `OPENROUTER_FREE_FALLBACK` | `true` | Retry an explicitly configured credit-requiring route once through `openrouter/free` |
 | `PROVIDER_RATE_LIMIT_COOLDOWN_SECONDS` | `60` | Per-session, per-provider cooldown after 429 |
+| `PROVIDER_HARD_QUOTA_COOLDOWN_SECONDS` | `3600` | Session-scoped cooldown when a provider reports exhausted account/daily quota without a reset time |
+| `GROQ_MAX_RATE_LIMIT_WAIT_SECONDS` | `20` | Wait once for a Groq `Retry-After` at or below this bound; otherwise fail over immediately |
+| `GROQ_TPM_LIMIT` | `8000` | Conservative per-request TPM preflight ceiling |
 | `VISION_MODEL` | = LLM model | Model used for visual analysis |
 | `LLM_TEMPERATURE` | `0.1` | Generation temperature |
-| `LLM_MAX_OUTPUT_TOKENS` | `4096` | Focused-answer output budget |
-| `LLM_EXHAUSTIVE_MAX_OUTPUT_TOKENS` | `8192` | Global/exhaustive output budget |
+| `LLM_MAX_OUTPUT_TOKENS` | `2048` | Focused-answer output budget |
+| `LLM_EXHAUSTIVE_MAX_OUTPUT_TOKENS` | `4096` | Global/exhaustive output budget |
 | `LLM_TIMEOUT_S` | `90` | Per-request timeout |
 | `LLM_RETRY_ATTEMPTS` | `2` | Quick retries before failing over |
 | `MAX_VISUALS_PER_QUERY` | `3` | Visual budget per answer (`MAX_IMAGES_PER_ANSWER` remains a legacy alias) |
@@ -405,6 +408,8 @@ fallback variables remain supported.
 | `OCR_PROVIDER` | `auto` | `vision` \| `tesseract` \| `none` |
 | `OCR_LANGUAGES` | `ara+eng` | Tesseract language packs |
 | `VISION_ENABLED` | `true` | Master switch for visual understanding |
+| `VISION_LAZY_ANALYSIS` | `true` | Store visuals during ingestion and understand only retrieved pages |
+| `VISION_ANALYSIS_MAX_TOKENS` / `VISION_OCR_MAX_TOKENS` | `800` / `1200` | Combined visual-description and exceptional standalone OCR budgets |
 | `MAX_IMAGES_PER_DOCUMENT` | `40` | Visual-analysis budget per document |
 | `PAGE_RENDER_DPI` | `170` | Render resolution for scanned pages |
 | `CHUNK_SIZE` / `CHUNK_OVERLAP` | `1100` / `150` | Chunking (characters) |
@@ -412,6 +417,7 @@ fallback variables remain supported.
 | `EXHAUSTIVE_SCAN_MAX_CHUNKS` / `EXHAUSTIVE_FINAL_K` | `120` / `24` | Bounded full-scan threshold and broad-query context limit |
 | `RETRIEVAL_STRATEGY` | `hybrid` | `hybrid` \| `vector` \| `keyword` |
 | `QUERY_REWRITE` | `true` | LLM query expansion |
+| `QUERY_REWRITE_MAX_TOKENS` / `RERANK_MAX_TOKENS` | `256` / `256` | Auxiliary LLM operation ceilings |
 | `MAX_UPLOAD_MB` / `MAX_FILES` | `50` / `25` | Upload limits |
 | `LOG_LEVEL` / `DEBUG_PANELS` | `INFO` / `false` | Server logging and non-sensitive diagnostics |
 | `OMNIRAG_DEBUG_GENERATION` | `false` | Internal generation diagnostics, including provider/model details; keep disabled for normal users |
@@ -778,8 +784,8 @@ OpenRouter, OpenAI, Cohere or Jina, the following leaves your machine:
 
 | Stage | What is sent | To whom |
 |---|---|---|
-| Visual analysis | Images of charts, diagrams, scanned pages | The configured vision model |
-| OCR (vision path) | Images of scanned pages | The configured vision model |
+| Lazy page understanding | Only retrieved charts, diagrams, or scanned pages; one combined visual/OCR call per page and cache key | The configured vision model |
+| OCR (exceptional standalone vision path) | A retrieved image only when separate OCR is explicitly invoked | The configured vision model |
 | Embedding | Chunk text | The embedding provider |
 | Reranking | Query + candidate passages | The rerank provider |
 | Answering | Retrieved passages + relevant images | The LLM provider |

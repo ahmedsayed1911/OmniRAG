@@ -53,13 +53,15 @@ def retry_call(
     max_delay: float = 8.0,
     retry_on: Iterable[Type[BaseException]] | None = None,
     operation: str = "provider call",
-    sleep: Callable[[float], None] = time.sleep,
+    sleep: Callable[[float], None] | None = None,
+    skip_if_retry_after_exceeds_max: bool = False,
 ) -> T:
     """Call ``func`` retrying transient failures.
 
     ``sleep`` is injectable so tests do not spend real time.
     """
     extra = tuple(retry_on or ())
+    sleep_fn = sleep or time.sleep
     last: BaseException | None = None
 
     for attempt in range(1, max(1, attempts) + 1):
@@ -70,7 +72,14 @@ def retry_call(
             if not retryable or attempt >= attempts:
                 raise
             last = exc
-            delay = getattr(exc, "retry_after", None) or backoff_delay(
+            retry_after = getattr(exc, "retry_after", None)
+            if (
+                skip_if_retry_after_exceeds_max
+                and retry_after is not None
+                and float(retry_after) > max_delay
+            ):
+                raise
+            delay = retry_after or backoff_delay(
                 attempt, base_delay, max_delay
             )
             delay = min(float(delay), max_delay)
@@ -82,7 +91,7 @@ def retry_call(
                 type(exc).__name__,
                 delay,
             )
-            sleep(float(delay))
+            sleep_fn(float(delay))
 
     assert last is not None  # pragma: no cover - unreachable
     raise last

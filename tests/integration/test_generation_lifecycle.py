@@ -104,7 +104,7 @@ def test_long_arabic_answer_is_exact_at_every_boundary_and_after_rerun(
         )
     )
 
-    assert llm.requested_output_tokens == 8192
+    assert llm.requested_output_tokens == 4096
     assert message.content == original
     assert message.debug["provider_raw_chars"] == len(original)
     assert message.debug["parsed_chars"] == len(original)

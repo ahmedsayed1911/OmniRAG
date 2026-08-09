@@ -40,6 +40,10 @@ from omnirag.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
+VISION_CACHE_VERSION = "vision-cache-v3"
+_shared_cache: Dict[str, "VisualAnalysis"] = {}
+_shared_cache_lock = threading.Lock()
+
 SYSTEM_PROMPT = """You analyse a visual element from a document so it can be found by search and reasoned about later.
 
 Classify the visual as exactly one of:
@@ -111,6 +115,8 @@ class VisualAnalysis:
     language: Language = Language.UNKNOWN
     decorative: bool = False
     error: Optional[str] = None
+    provider: str = ""
+    model: str = ""
 
     @property
     def ok(self) -> bool:
@@ -160,8 +166,11 @@ class VisionAnalyzer:
         self.min_image_pixels = min_image_pixels
         self.max_output_tokens = max_output_tokens
         self.enabled = enabled
-        self._cache: Dict[str, VisualAnalysis] = {}
-        self._lock = threading.Lock()
+        # Process-shared so rebuilding the Streamlit engine on a rerun does not
+        # pay for the same page again. The key is content-addressed and scoped
+        # by document/page, so sessions and documents cannot collide.
+        self._cache = _shared_cache
+        self._lock = _shared_cache_lock
         self.calls = 0
         self.cache_hits = 0
 
@@ -178,6 +187,7 @@ class VisionAnalyzer:
         expect: Optional[BlockType] = None,
         skip_decorative_check: bool = False,
         document_id: str = "",
+        document_hash: str = "",
         page_number: Optional[int] = None,
     ) -> VisualAnalysis:
         """Describe one visual. Never raises — failures come back as ``error``."""
@@ -196,29 +206,20 @@ class VisionAnalyzer:
                 "Visual understanding is unavailable: no image-capable model is configured."
             )
 
-        provider_identity = "unconfigured"
-        if self.llm is not None:
-            description = self.llm.describe()
-            chain = description.get("chain") or [description]
-            provider_identity = "|".join(
-                f"{item.get('provider', '')}:{item.get('model', '')}"
-                for item in chain
-            )
-        key = short_hash(
+        neutral_key = short_hash(
             "|".join(
                 [
-                    "vision-cache-v2",
-                    document_id,
+                    VISION_CACHE_VERSION,
+                    document_hash or document_id,
                     str(page_number or ""),
                     short_hash(image, 32),
-                    provider_identity,
                     expect.value if expect else "auto",
                 ]
             ),
             32,
         )
         with self._lock:
-            cached = self._cache.get(key)
+            cached = self._cache.get(neutral_key)
         if cached is not None:
             self.cache_hits += 1
             return cached
@@ -256,12 +257,25 @@ class VisionAnalyzer:
 
         analysis = _parse(response.text, expect=expect)
         if analysis.ok:
+            analysis.provider = response.provider
+            analysis.model = response.model
+            provider_key = short_hash(
+                f"{neutral_key}|{analysis.provider}|{analysis.model}|{VISION_CACHE_VERSION}",
+                32,
+            )
             with self._lock:
-                self._cache[key] = analysis
+                # The neutral alias deliberately survives provider failover;
+                # the provider/model key remains available for diagnostics.
+                self._cache[neutral_key] = analysis
+                self._cache[provider_key] = analysis
         return analysis
 
     def stats(self) -> Dict[str, int]:
         return {"calls": self.calls, "cache_hits": self.cache_hits, "cached": len(self._cache)}
+
+    def clear_cache(self) -> None:
+        with self._lock:
+            self._cache.clear()
 
 
 # --------------------------------------------------------------------------- #
@@ -359,6 +373,7 @@ def build_vision_analyzer(settings=None) -> VisionAnalyzer:
         max_image_edge=cfg.max_image_edge,
         jpeg_quality=cfg.jpeg_quality,
         min_image_pixels=cfg.min_image_pixels,
+        max_output_tokens=cfg.analysis_max_output_tokens,
         enabled=cfg.enabled,
     )
 
