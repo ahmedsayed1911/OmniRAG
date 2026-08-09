@@ -220,7 +220,7 @@ def _render_document_row(summary: DocumentSummary, *, is_active: bool) -> None:
             "✕",
             key=f"remove_{summary.document_id}",
             help="Remove this document",
-            use_container_width=True,
+            width="stretch",
         ):
             _remove_document(summary)
 
@@ -274,18 +274,18 @@ def _render_selector(ready: List[DocumentSummary], selected: Optional[List[str]]
 def _render_actions() -> None:
     columns = st.columns(2, gap="small")
     with columns[0]:
-        if st.button("💬 New chat", use_container_width=True, help="Clear the conversation, keep documents"):
+        if st.button("💬 New chat", width="stretch", help="Clear the conversation, keep documents"):
             state.new_chat()
             st.rerun()
     with columns[1]:
-        if st.button("🗑️ Clear all", use_container_width=True, help="Remove every document and message"):
+        if st.button("🗑️ Clear all", width="stretch", help="Remove every document and message"):
             state.reset_session()
             st.rerun()
 
     if state.documents():
         if st.button(
             "🔄 Re-index documents",
-            use_container_width=True,
+            width="stretch",
             help="Rebuild the search index from the uploaded files",
         ):
             _reindex()

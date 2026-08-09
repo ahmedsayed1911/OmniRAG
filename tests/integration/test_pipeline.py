@@ -245,11 +245,11 @@ class TestFullPipeline:
                 raise ProviderUnavailableError("mock 503", provider=self.name)
 
         class OperationAwareFallback(BaseLLMProvider):
-            name = "openrouter"
+            name = "groq"
             supports_vision = True
 
             def __init__(self):
-                super().__init__(model="google/gemini-3.6-flash")
+                super().__init__(model="openai/gpt-oss-20b")
                 self.operations = []
 
             def complete(self, messages, **kwargs):
@@ -260,6 +260,18 @@ class TestFullPipeline:
                 else:
                     text = "بلغت الإيرادات 8.4 مليون دولار في الربع الرابع [1]."
                 return LLMResponse(text=text, model=self.model, provider=self.name)
+
+        class FinalFallback(BaseLLMProvider):
+            name = "openrouter"
+            supports_vision = True
+
+            def __init__(self):
+                super().__init__(model="openrouter/free")
+                self.call_count = 0
+
+            def complete(self, messages, **kwargs):
+                self.call_count += 1
+                raise AssertionError("OpenRouter must not run after Groq succeeds")
 
         engine.settings = replace(
             engine.settings,
@@ -273,7 +285,10 @@ class TestFullPipeline:
         assert uploaded.status == IngestionStatus.READY
 
         fallback = OperationAwareFallback()
-        engine._llm = FallbackLLMProvider([UnavailablePrimary(), fallback])
+        final_fallback = FinalFallback()
+        engine._llm = FallbackLLMProvider(
+            [UnavailablePrimary(), fallback, final_fallback]
+        )
         answer = ChatService(engine).answer(
             ChatRequest(question="ما إجمالي الإيرادات في الربع الرابع؟", session_id=session_id)
         )
@@ -284,10 +299,13 @@ class TestFullPipeline:
         assert fallback.operations == ["query_rewrite", "final_answer"]
         attempts = answer.debug["provider_attempts"]
         assert any("final_answer/gemini" in attempt for attempt in attempts)
-        assert any("final_answer/openrouter" in attempt for attempt in attempts)
-        assert answer.debug["provider"] == "openrouter"
-        assert answer.debug["model"] == "google/gemini-3.6-flash"
+        assert any("final_answer/groq" in attempt for attempt in attempts)
+        assert not any("final_answer/openrouter" in attempt for attempt in attempts)
+        assert answer.debug["provider"] == "groq"
+        assert answer.debug["model"] == "openai/gpt-oss-20b"
+        assert answer.debug["fallback_position"] == 1
         assert answer.debug["warnings"] == []
+        assert final_fallback.call_count == 0
 
     def test_pptx_answer_cites_slide_numbers(
         self, service, wired, session_id, sample_pptx, recording_llm

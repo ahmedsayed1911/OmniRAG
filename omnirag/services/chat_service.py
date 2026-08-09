@@ -216,7 +216,8 @@ class ChatService:
         llm = self.engine.llm
         if llm is None:
             raise MissingCredentialError(
-                "GEMINI_API_KEY or OPENROUTER_API_KEY", "answer generation"
+                "GEMINI_API_KEY, GROQ_API_KEY, or OPENROUTER_API_KEY",
+                "answer generation",
             )
         return AnswerGenerator(
             llm, file_store=self.engine.file_store, settings=self.settings

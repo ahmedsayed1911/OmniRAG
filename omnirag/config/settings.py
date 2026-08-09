@@ -15,6 +15,9 @@ from functools import lru_cache
 from typing import Any, Dict, List, Optional
 
 from omnirag.core.exceptions import ConfigurationError, MissingCredentialError
+from omnirag.utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 # --------------------------------------------------------------------------- #
 # env helpers
@@ -85,7 +88,7 @@ def _first_env(*names: str, default: str = "") -> str:
 class ProviderEndpoint:
     """Credentials + model for one concrete LLM vendor in the chain."""
 
-    provider: str                      # gemini | openrouter | openai | anthropic | mock
+    provider: str                      # gemini | groq | openrouter | openai | anthropic | mock
     api_key: str = ""
     model: str = ""
     vision_model: str = ""
@@ -156,7 +159,7 @@ class LLMSettings:
 
     @property
     def chain_label(self) -> str:
-        """``gemini → openrouter`` — for logs and the UI settings panel."""
+        """Ordered provider/model label for logs and the diagnostic panel."""
         return " → ".join(
             f"{e.provider}:{e.model}" for e in self.configured_endpoints
         ) or "not configured"
@@ -164,7 +167,8 @@ class LLMSettings:
     def require_key(self) -> str:
         if not self.is_configured:
             raise MissingCredentialError(
-                "GEMINI_API_KEY or OPENROUTER_API_KEY", "answer generation"
+                "GEMINI_API_KEY, GROQ_API_KEY, or OPENROUTER_API_KEY",
+                "answer generation",
             )
         primary = self.primary_endpoint
         return primary.api_key if primary else ""
@@ -299,8 +303,8 @@ class AppSettings:
         issues: List[str] = []
         if not self.llm.is_configured:
             issues.append(
-                "No language-model provider is configured. Set `GEMINI_API_KEY` "
-                "(primary) and/or `OPENROUTER_API_KEY` (fallback) in your "
+                "No language-model provider is configured. Set `GEMINI_API_KEY`, "
+                "`GROQ_API_KEY`, and/or `OPENROUTER_API_KEY` in your "
                 "environment or Streamlit secrets."
             )
         if not self.embedding.is_configured:
@@ -328,7 +332,10 @@ class AppSettings:
         if self.llm.is_configured and not self.llm.fallback_active:
             if len(self.llm.configured_endpoints) == 1 and self.llm.enable_fallback:
                 only = self.llm.configured_endpoints[0].provider
-                other = "OPENROUTER_API_KEY" if only == "gemini" else "GEMINI_API_KEY"
+                other = {
+                    "gemini": "GROQ_API_KEY",
+                    "groq": "OPENROUTER_API_KEY",
+                }.get(only, "GEMINI_API_KEY")
                 notes.append(
                     f"Only one LLM provider (`{only}`) is configured, so there is no "
                     f"automatic failover. Add `{other}` to enable it."
@@ -534,31 +541,47 @@ def _redact_dataclass(obj: Any) -> Dict[str, Any]:
 def _build_llm_settings() -> LLMSettings:
     """Assemble the ordered LLM provider chain from the environment.
 
-    Default strategy: **Gemini primary, OpenRouter fallback**. Providers with no
-    credentials are dropped from the chain, so every combination works:
-
-    * both configured    -> Gemini primary, OpenRouter fallback
-    * only Gemini        -> Gemini alone, no fallback
-    * only OpenRouter    -> OpenRouter becomes the active provider
-    * neither configured -> empty chain; the UI shows a configuration error
+    Default strategy: **Gemini, Groq, OpenRouter**. Providers without
+    credentials are skipped without preventing application startup. Set
+    ``LLM_PROVIDER_CHAIN`` for an explicit order; the legacy primary/fallback
+    variables remain supported.
     """
+    raw_chain = _get("LLM_PROVIDER_CHAIN")
     primary_name = _get("PRIMARY_LLM_PROVIDER", "").lower()
     fallback_name = _get("FALLBACK_LLM_PROVIDER", "").lower()
     legacy_provider = _get("LLM_PROVIDER", "").lower()
 
-    if not primary_name:
-        primary_name = legacy_provider or "gemini"
-    if not fallback_name and not legacy_provider:
-        fallback_name = "openrouter"
+    if raw_chain:
+        order = _unique_provider_names(raw_chain.split(","))
+        if not order:
+            raise ConfigurationError(
+                "LLM_PROVIDER_CHAIN contains no provider names",
+                user_message="`LLM_PROVIDER_CHAIN` must contain at least one provider.",
+            )
+    else:
+        primary_name = primary_name or legacy_provider or "gemini"
+        order = [primary_name]
 
-    order: List[str] = [primary_name]
-    if fallback_name and fallback_name not in order and fallback_name != "none":
-        order.append(fallback_name)
+        # Preserve the historical primary/fallback controls while inserting
+        # Groq between the default Gemini and OpenRouter links.
+        if fallback_name and fallback_name != "none":
+            if primary_name == "gemini" and fallback_name == "openrouter":
+                order.append("groq")
+            order.append(fallback_name)
+        elif fallback_name != "none" and not legacy_provider:
+            order.extend(
+                name
+                for name in ("gemini", "groq", "openrouter")
+                if name != primary_name
+            )
 
-    # Any other vendor that has a key becomes a last-resort link in the chain.
-    for extra in ("gemini", "openrouter", "openai", "anthropic"):
-        if extra not in order and _endpoint_key(extra):
-            order.append(extra)
+        order = _unique_provider_names(order)
+        if fallback_name != "none":
+            # Keep existing optional providers as last-resort links when they
+            # have credentials, without changing an explicit chain.
+            for extra in ("gemini", "groq", "openrouter", "openai", "anthropic"):
+                if extra not in order and _endpoint_key(extra):
+                    order.append(extra)
 
     endpoints = tuple(_build_endpoint(name) for name in order)
     configured = tuple(e for e in endpoints if e.is_configured)
@@ -594,6 +617,7 @@ def _build_llm_settings() -> LLMSettings:
 #: order. ``LLM_API_KEY`` is the generic escape hatch.
 _ENDPOINT_KEY_VARS: Dict[str, tuple[str, ...]] = {
     "gemini": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
+    "groq": ("GROQ_API_KEY", "GROK_API_KEY"),
     "openrouter": ("OPENROUTER_API_KEY",),
     "openai": ("OPENAI_API_KEY",),
     "openai_compatible": ("OPENAI_API_KEY",),
@@ -607,10 +631,20 @@ def _endpoint_key(provider: str) -> str:
     return _first_env(*_ENDPOINT_KEY_VARS.get(provider, ()))
 
 
+def _unique_provider_names(names: Any) -> List[str]:
+    order: List[str] = []
+    for raw_name in names:
+        name = str(raw_name).strip().lower()
+        if name and name != "none" and name not in order:
+            order.append(name)
+    return order
+
+
 def _build_endpoint(provider: str) -> ProviderEndpoint:
     """Resolve credentials/model for one vendor, honouring generic overrides."""
     prefix = {
         "gemini": "GEMINI",
+        "groq": "GROQ",
         "openrouter": "OPENROUTER",
         "openai": "OPENAI",
         "openai_compatible": "OPENAI",
@@ -618,6 +652,11 @@ def _build_endpoint(provider: str) -> ProviderEndpoint:
     }.get(provider, provider.upper())
 
     api_key = _get(f"{prefix}_API_KEY") or _endpoint_key(provider)
+    if provider == "groq" and not _get("GROQ_API_KEY") and _get("GROK_API_KEY"):
+        logger.warning(
+            "GROK_API_KEY is deprecated; rename it to GROQ_API_KEY. "
+            "The alias remains active for compatibility."
+        )
     generic_key = _get("LLM_API_KEY")
     generic_provider = _get("LLM_PROVIDER", "").lower()
     if not api_key and generic_key and (not generic_provider or generic_provider == provider):
@@ -628,7 +667,11 @@ def _build_endpoint(provider: str) -> ProviderEndpoint:
         model = _get("LLM_MODEL")
     model = model or _default_model(provider)
 
-    vision_model = _get(f"{prefix}_VISION_MODEL") or _get("VISION_MODEL")
+    vision_model = (
+        _get(f"{prefix}_VISION_MODEL")
+        or _get("VISION_MODEL")
+        or _default_vision_model(provider)
+    )
     base_url = _get(f"{prefix}_BASE_URL") or _get("LLM_BASE_URL")
 
     supports_images: Optional[bool] = None
@@ -654,10 +697,17 @@ def _default_model(provider: str) -> str:
         "openai_compatible": "gpt-4o-mini",
         "anthropic": "claude-sonnet-4-5",
         "gemini": "gemini-3.6-flash",
+        "groq": "openai/gpt-oss-20b",
         # Official dynamic free router; it filters by requested capabilities.
         "openrouter": "openrouter/free",
         "mock": "mock-llm",
     }.get(provider, "gpt-4o-mini")
+
+
+def _default_vision_model(provider: str) -> str:
+    return {
+        "groq": "qwen/qwen3.6-27b",
+    }.get(provider, "")
 
 
 def _default_embedding_model(provider: str) -> str:

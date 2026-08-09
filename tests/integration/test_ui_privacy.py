@@ -34,6 +34,7 @@ def _fallback_message() -> ChatMessage:
             "model": MODEL,
             "provider_attempts": [
                 "final_answer/gemini: RateLimitError [recoverable]",
+                "final_answer/groq: ProviderUnavailableError [recoverable]",
                 "final_answer/openrouter: ok",
             ],
             "openrouter_free_fallback": True,
@@ -74,6 +75,7 @@ def test_normal_ui_hides_provider_model_fallback_and_internal_diagnostics(
         PROVIDER,
         MODEL,
         "gemini",
+        "groq",
         "fallback",
         "failover",
         "rate limit",
@@ -93,13 +95,17 @@ def test_normal_ui_hides_provider_model_fallback_and_internal_diagnostics(
     stored = app.session_state[MESSAGES_KEY][0]
     assert stored.debug["provider"] == PROVIDER
     assert stored.debug["model"] == MODEL
-    assert len(stored.debug["provider_attempts"]) == 2
+    assert len(stored.debug["provider_attempts"]) == 3
 
 
 def test_provider_and_model_are_visible_only_in_generation_diagnostic_mode(
     monkeypatch, session_id
 ):
     _configure(monkeypatch, debug=True)
+    monkeypatch.setenv("LLM_PROVIDER_CHAIN", "gemini,groq,openrouter")
+    monkeypatch.setenv("GEMINI_API_KEY", "debug-gemini-key")
+    monkeypatch.setenv("GROQ_API_KEY", "debug-groq-key")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "debug-openrouter-key")
     app = AppTest.from_file(str(ROOT / "app.py"))
     app.session_state[SESSION_KEY] = session_id
     app.session_state[MESSAGES_KEY] = [_fallback_message()]
@@ -110,6 +116,7 @@ def test_provider_and_model_are_visible_only_in_generation_diagnostic_mode(
     visible = _visible_text(app).lower()
     assert PROVIDER in visible
     assert MODEL in visible
+    assert "groq" in visible
     assert "fallback" in visible
     assert "generation diagnostics" in visible
 

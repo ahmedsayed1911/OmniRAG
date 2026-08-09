@@ -61,7 +61,9 @@ def classify(exc: BaseException) -> FailureClass:
     if isinstance(exc, ProviderAuthError):
         return FailureClass.AUTH
     if isinstance(exc, ProviderPaymentRequiredError):
-        return FailureClass.PAYMENT
+        # Another configured provider (or OpenRouter's free route) may serve
+        # the same valid request without requiring credits.
+        return FailureClass.RECOVERABLE
     if isinstance(exc, ProviderBadRequestError):
         return FailureClass.BAD_REQUEST
     if isinstance(exc, AllProvidersFailedError):
@@ -87,6 +89,8 @@ def should_retry_same_provider(exc: BaseException) -> bool:
     a Streamlit request, so retrying only makes the UI hang.
     """
     if isinstance(exc, RateLimitError) and exc.quota_exhausted:
+        return False
+    if isinstance(exc, ProviderPaymentRequiredError):
         return False
     return classify(exc) is FailureClass.RECOVERABLE
 

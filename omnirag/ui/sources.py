@@ -120,7 +120,7 @@ def _render_visual(citation: Citation, file_store: FileStore, key_prefix: str) -
         st.image(
             data,
             caption=f"{citation.filename} — {citation.page_label}",
-            use_container_width=True,
+            width="stretch",
         )
 
 

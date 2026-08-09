@@ -2,7 +2,7 @@
 
 The application always talks to :func:`get_llm_provider`, which returns a
 :class:`~omnirag.providers.llm.router.FallbackLLMProvider` wrapping the
-configured chain (Gemini primary → OpenRouter fallback by default).
+configured chain (Gemini → Groq → OpenRouter by default).
 """
 
 from omnirag.providers.llm.anthropic import AnthropicLLM
@@ -21,6 +21,7 @@ from omnirag.providers.llm.factory import (
     reset_llm_cache,
 )
 from omnirag.providers.llm.gemini import GeminiLLM
+from omnirag.providers.llm.groq import GroqLLM
 from omnirag.providers.llm.mock import MockLLM
 from omnirag.providers.llm.openai_compat import OpenAICompatibleLLM
 from omnirag.providers.llm.openrouter import OpenRouterLLM, model_supports_images
@@ -35,6 +36,7 @@ __all__ = [
     "BaseLLMProvider",
     "FallbackLLMProvider",
     "GeminiLLM",
+    "GroqLLM",
     "ImagePart",
     "LLMMessage",
     "LLMRequestRequirements",

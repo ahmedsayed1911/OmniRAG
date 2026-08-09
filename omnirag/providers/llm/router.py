@@ -2,7 +2,7 @@
 
 The rest of OmniRAG depends only on :class:`~omnirag.providers.llm.base.BaseLLMProvider`.
 This adapter *is* one, and internally holds an ordered chain of real providers
-(Gemini primary, OpenRouter fallback by default).
+(Gemini, Groq, OpenRouter by default).
 
 Failover policy
 ---------------
@@ -110,7 +110,7 @@ class FallbackLLMProvider(BaseLLMProvider):
         self._lock = threading.Lock()
         self.rate_limit_cooldown_seconds = max(0.0, rate_limit_cooldown_seconds)
         self._clock = clock
-        self._rate_limit_cooldowns: Dict[str, float] = {}
+        self._rate_limit_cooldowns: Dict[tuple[str, str], float] = {}
 
     # ------------------------------------------------------------------ #
     @property
@@ -163,10 +163,10 @@ class FallbackLLMProvider(BaseLLMProvider):
         attempts: List[ProviderAttempt] = []
         failures: List[tuple[str, BaseException]] = []
         capability_error: Optional[ProviderCapabilityError] = None
-        cooldown_error: Optional[RateLimitError] = None
+        cooldown_failures: List[tuple[str, BaseException]] = []
 
         for index, provider in enumerate(self.chain):
-            if provider.name == "gemini" and self._cooldown_active(session_id):
+            if self._cooldown_active(session_id, provider.name):
                 attempts.append(ProviderAttempt(
                     provider=provider.name,
                     model=model or provider.model,
@@ -175,13 +175,19 @@ class FallbackLLMProvider(BaseLLMProvider):
                     failure_class="rate_limit_cooldown",
                 ))
                 logger.info(
-                    "LLM operation=%s provider=gemini skipped=session_rate_limit_cooldown",
+                    "LLM operation=%s provider=%s skipped=session_rate_limit_cooldown",
                     operation,
+                    provider.name,
                 )
-                cooldown_error = RateLimitError(
-                    "Gemini is temporarily skipped after a session rate limit",
-                    provider="gemini",
-                    quota_exhausted=True,
+                cooldown_failures.append(
+                    (
+                        provider.name,
+                        RateLimitError(
+                            f"{provider.name} is temporarily skipped after a session rate limit",
+                            provider=provider.name,
+                            quota_exhausted=True,
+                        ),
+                    )
                 )
                 continue
             # -- capability gate: never silently drop visual evidence -------- #
@@ -250,8 +256,8 @@ class FallbackLLMProvider(BaseLLMProvider):
                 )
                 failures.append((provider.name, exc))
 
-                if provider.name == "gemini" and isinstance(exc, RateLimitError):
-                    self._start_cooldown(session_id)
+                if isinstance(exc, RateLimitError):
+                    self._start_cooldown(session_id, provider.name)
 
                 logger.warning(
                     "LLM operation=%s provider=%s model=%s status=%s "
@@ -308,20 +314,18 @@ class FallbackLLMProvider(BaseLLMProvider):
 
             response.provider = response.provider or provider.name
             response.fallback_used = response.fallback_used or index > 0
+            response.diagnostics.setdefault("fallback_position", index)
             response.attempts = [str(a) for a in attempts]
             self._record(response, failover=index > 0)
             return response
 
         # Every provider was skipped or failed.
+        failures = [*cooldown_failures, *failures]
         if capability_error is not None and not failures:
             raise capability_error
-        if cooldown_error is not None and failures:
-            failures.insert(0, ("gemini", cooldown_error))
         if capability_error is not None and failures:
             failures.append((capability_error.provider or "provider", capability_error))
         if not failures:
-            if cooldown_error is not None:
-                raise cooldown_error
             raise ProviderCapabilityError(
                 "No configured provider could serve this request",
                 provider=self.name,
@@ -329,21 +333,22 @@ class FallbackLLMProvider(BaseLLMProvider):
             )
         raise AllProvidersFailedError(failures)
 
-    def _cooldown_active(self, session_id: str) -> bool:
+    def _cooldown_active(self, session_id: str, provider: str) -> bool:
         if not session_id or self.rate_limit_cooldown_seconds <= 0:
             return False
+        key = (session_id, provider)
         with self._lock:
-            expiry = self._rate_limit_cooldowns.get(session_id, 0.0)
+            expiry = self._rate_limit_cooldowns.get(key, 0.0)
             if expiry <= self._clock():
-                self._rate_limit_cooldowns.pop(session_id, None)
+                self._rate_limit_cooldowns.pop(key, None)
                 return False
             return True
 
-    def _start_cooldown(self, session_id: str) -> None:
+    def _start_cooldown(self, session_id: str, provider: str) -> None:
         if not session_id or self.rate_limit_cooldown_seconds <= 0:
             return
         with self._lock:
-            self._rate_limit_cooldowns[session_id] = (
+            self._rate_limit_cooldowns[(session_id, provider)] = (
                 self._clock() + self.rate_limit_cooldown_seconds
             )
 

@@ -116,7 +116,7 @@ def _render_example_prompts() -> None:
     columns = st.columns(2, gap="small")
     for index, prompt in enumerate(prompts[:6]):
         with columns[index % 2]:
-            if st.button(prompt, key=f"example_{index}", use_container_width=True):
+            if st.button(prompt, key=f"example_{index}", width="stretch"):
                 state.set_pending_prompt(prompt)
                 st.rerun()
 

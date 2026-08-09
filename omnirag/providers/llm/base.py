@@ -46,7 +46,7 @@ class LLMResponse:
     finish_reason: str = ""
     usage: Dict[str, Any] = field(default_factory=dict)
     raw: Optional[Dict[str, Any]] = None
-    #: Which adapter actually produced this text (``gemini``, ``openrouter``…).
+    #: Which adapter actually produced this text (``gemini``, ``groq``…).
     provider: str = ""
     #: True when the primary provider failed and a fallback answered instead.
     fallback_used: bool = False

@@ -41,6 +41,7 @@ _TEXT_ONLY_HINTS = ("embedding", "whisper", "tts", "moderation", "instruct")
 class OpenAICompatibleLLM(BaseLLMProvider):
     name = "openai_compatible"
     supports_vision = True
+    max_tokens_field = "max_tokens"
 
     def __init__(
         self,
@@ -85,7 +86,7 @@ class OpenAICompatibleLLM(BaseLLMProvider):
             "model": target_model,
             "messages": self._build_messages(messages, system),
             "temperature": self.temperature if temperature is None else temperature,
-            "max_tokens": max_output_tokens or self.max_output_tokens,
+            self.max_tokens_field: max_output_tokens or self.max_output_tokens,
         }
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
@@ -96,6 +97,8 @@ class OpenAICompatibleLLM(BaseLLMProvider):
 
         headers = self._headers()
 
+        diagnostics: Dict[str, Any] = {}
+
         def _call() -> Dict[str, Any]:
             return post_json(
                 f"{self.base_url}/chat/completions",
@@ -103,6 +106,7 @@ class OpenAICompatibleLLM(BaseLLMProvider):
                 headers=headers,
                 timeout_s=self.timeout_s,
                 provider=self.name,
+                diagnostics=diagnostics,
             )
 
         body = retry_call(
@@ -111,7 +115,11 @@ class OpenAICompatibleLLM(BaseLLMProvider):
             operation=f"{self.name}/chat-completions ({target_model})",
             max_delay=2.0,
         )
-        return self._parse(body, target_model)
+        response = self._parse(body, target_model)
+        response.diagnostics.update(diagnostics)
+        response.diagnostics.setdefault("provider_raw_chars", len(response.text))
+        response.diagnostics.setdefault("parsed_chars", len(response.text))
+        return response
 
     def _headers(self) -> Dict[str, str]:
         return {

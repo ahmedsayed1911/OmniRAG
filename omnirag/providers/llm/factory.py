@@ -10,6 +10,7 @@ the first answer is requested.
 from __future__ import annotations
 
 import threading
+from hashlib import sha256
 from typing import Dict, List, Optional
 
 from omnirag.config.settings import AppSettings, LLMSettings, ProviderEndpoint, get_settings
@@ -17,6 +18,7 @@ from omnirag.core.exceptions import ConfigurationError, MissingCredentialError
 from omnirag.providers.llm.anthropic import AnthropicLLM
 from omnirag.providers.llm.base import BaseLLMProvider
 from omnirag.providers.llm.gemini import GeminiLLM
+from omnirag.providers.llm.groq import GroqLLM
 from omnirag.providers.llm.mock import MockLLM
 from omnirag.providers.llm.openai_compat import OpenAICompatibleLLM
 from omnirag.providers.llm.openrouter import OpenRouterLLM
@@ -30,6 +32,7 @@ _lock = threading.Lock()
 
 SUPPORTED_PROVIDERS = (
     "gemini",
+    "groq",
     "openrouter",
     "openai",
     "openai_compatible",
@@ -47,7 +50,21 @@ def _signature(cfg: LLMSettings) -> str:
         str(cfg.openrouter_free_fallback),
         str(cfg.rate_limit_cooldown_seconds),
     ]
-    parts.extend(f"{e.provider}:{len(e.api_key)}:{e.base_url}" for e in cfg.endpoints)
+    parts.extend(
+        ":".join(
+            (
+                endpoint.provider,
+                sha256(endpoint.api_key.encode("utf-8")).hexdigest()
+                if endpoint.api_key
+                else "",
+                endpoint.model,
+                endpoint.vision_model,
+                endpoint.base_url,
+                str(endpoint.supports_images),
+            )
+        )
+        for endpoint in cfg.endpoints
+    )
     return "|".join(parts)
 
 
@@ -78,6 +95,11 @@ def build_endpoint_provider(
 
     if provider == "gemini":
         return GeminiLLM(**common)
+    if provider == "groq":
+        return GroqLLM(
+            supports_images_override=endpoint.supports_images,
+            **common,
+        )
     if provider == "openrouter":
         return OpenRouterLLM(
             supports_images_override=endpoint.supports_images,
@@ -103,13 +125,15 @@ def build_endpoint_provider(
 def build_llm_provider(cfg: LLMSettings) -> BaseLLMProvider:
     """Build the full provider chain (uncached).
 
-    Endpoints without credentials are skipped, which is what makes every
-    configuration combination work — Gemini only, OpenRouter only, or both.
+    Endpoints without credentials are skipped, which makes every configuration
+    combination work, including any subset of the default
+    Gemini, Groq, and OpenRouter chain.
     """
     endpoints = cfg.configured_endpoints
     if not endpoints:
         raise MissingCredentialError(
-            "GEMINI_API_KEY or OPENROUTER_API_KEY", "answer generation"
+            "GEMINI_API_KEY, GROQ_API_KEY, or OPENROUTER_API_KEY",
+            "answer generation",
         )
 
     providers: List[BaseLLMProvider] = []

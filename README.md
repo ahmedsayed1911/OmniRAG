@@ -93,7 +93,7 @@ OmniRAG is built around three commitments:
 - Conversation memory that never becomes evidence
 
 **Operations**
-- Gemini primary → OpenRouter fallback, with classified failover
+- Gemini → Groq → OpenRouter Free, with classified capability-aware failover
 - Session isolation enforced inside the vector store, not by callers
 - Graceful degradation at every provider boundary
 - Evaluation module: Recall@K, Precision@K, MRR, nDCG, citation coverage,
@@ -128,7 +128,7 @@ flowchart TB
     end
 
     subgraph PROV["omnirag/providers — swappable adapters"]
-        LLM[LLM router<br/>Gemini → OpenRouter]
+        LLM[LLM router<br/>Gemini → Groq → OpenRouter]
         EMBP[Embeddings]
         RRK[Reranker]
         OCRP[OCR]
@@ -327,27 +327,34 @@ it.**
 Every setting is read in one place (`omnirag/config/settings.py`); no other
 module calls `os.getenv`.
 
-### The LLM chain: Gemini primary → OpenRouter fallback
+### The LLM chain: Gemini → Groq → OpenRouter Free
 
 ```bash
+LLM_PROVIDER_CHAIN=gemini,groq,openrouter
 PRIMARY_LLM_PROVIDER=gemini
-FALLBACK_LLM_PROVIDER=openrouter
 ENABLE_PROVIDER_FALLBACK=true
 
 GEMINI_API_KEY=...              # https://aistudio.google.com/apikey
 GEMINI_MODEL=gemini-3.6-flash
+
+GROQ_API_KEY=...                # https://console.groq.com/keys
+GROQ_MODEL=openai/gpt-oss-20b
+GROQ_VISION_MODEL=qwen/qwen3.6-27b
 
 OPENROUTER_API_KEY=...          # https://openrouter.ai/keys
 OPENROUTER_MODEL=openrouter/free
 OPENROUTER_FREE_FALLBACK=true
 ```
 
-**All four configurations work:**
+Providers without credentials are skipped, so partial configurations work:
 
 | Configured | Behaviour |
 |---|---|
-| Gemini + OpenRouter | Gemini primary, automatic failover to OpenRouter |
+| Gemini + Groq + OpenRouter | Gemini, then Groq, then OpenRouter Free |
+| Gemini + Groq | Gemini primary, automatic failover to Groq |
+| Groq + OpenRouter | Groq primary, automatic failover to OpenRouter Free |
 | Gemini only | Works normally, no failover (a note is shown in the UI) |
+| Groq only | Groq becomes the active provider |
 | OpenRouter only | OpenRouter becomes the active provider |
 | Neither | A clear configuration error in the UI — the app does not crash |
 
@@ -358,21 +365,30 @@ available, OmniRAG reports that explicitly instead of dropping the chart.
 Concrete OpenRouter model IDs remain supported. Override detection with
 `OPENROUTER_MODEL_SUPPORTS_IMAGES=true|false` if you know better.
 
+Groq uses its official OpenAI-compatible endpoint. The default production text
+model is `openai/gpt-oss-20b`; visual requests use the explicitly image-capable
+`qwen/qwen3.6-27b`. Unknown Groq models are treated as text-only unless
+`GROQ_MODEL_SUPPORTS_IMAGES=true` is set. `GROK_API_KEY` remains a deprecated
+alias, but `GROQ_API_KEY` always wins.
+
 Other vendors (`openai`, `anthropic`, any OpenAI-compatible gateway via
-`LLM_BASE_URL`) are supported as primary or fallback — set
-`PRIMARY_LLM_PROVIDER` accordingly.
+`LLM_BASE_URL`) can be included in `LLM_PROVIDER_CHAIN`. The legacy primary and
+fallback variables remain supported.
 
 ### Complete variable reference
 
 | Variable | Default | Purpose |
 |---|---|---|
+| `LLM_PROVIDER_CHAIN` | `gemini,groq,openrouter` | Ordered provider chain; missing credentials are skipped |
 | `PRIMARY_LLM_PROVIDER` | `gemini` | First provider in the chain |
-| `FALLBACK_LLM_PROVIDER` | `openrouter` | Provider used on recoverable failures |
+| `FALLBACK_LLM_PROVIDER` | — | Legacy single-fallback control |
 | `ENABLE_PROVIDER_FALLBACK` | `true` | Master switch for failover |
 | `GEMINI_API_KEY` / `GEMINI_MODEL` | — / `gemini-3.6-flash` | Primary credentials |
+| `GROQ_API_KEY` / `GROQ_MODEL` | — / `openai/gpt-oss-20b` | Canonical Groq credentials and fast text model |
+| `GROQ_VISION_MODEL` | `qwen/qwen3.6-27b` | Groq model used only for requests containing images |
 | `OPENROUTER_API_KEY` / `OPENROUTER_MODEL` | — / `openrouter/free` | Fallback credentials and dynamic free route |
 | `OPENROUTER_FREE_FALLBACK` | `true` | Retry an explicitly configured credit-requiring route once through `openrouter/free` |
-| `PROVIDER_RATE_LIMIT_COOLDOWN_SECONDS` | `60` | Per-session Gemini cooldown after 429 |
+| `PROVIDER_RATE_LIMIT_COOLDOWN_SECONDS` | `60` | Per-session, per-provider cooldown after 429 |
 | `VISION_MODEL` | = LLM model | Model used for visual analysis |
 | `LLM_TEMPERATURE` | `0.1` | Generation temperature |
 | `LLM_MAX_OUTPUT_TOKENS` | `4096` | Focused-answer output budget |
@@ -536,12 +552,16 @@ and the vector index lives in Qdrant rather than in the app's memory.
 **Cloud:** paste into *App settings → Secrets*:
 
 ```toml
+LLM_PROVIDER_CHAIN = "gemini,groq,openrouter"
 PRIMARY_LLM_PROVIDER = "gemini"
-FALLBACK_LLM_PROVIDER = "openrouter"
 ENABLE_PROVIDER_FALLBACK = "true"
 
 GEMINI_API_KEY = "your-gemini-key"
 GEMINI_MODEL = "gemini-3.6-flash"
+
+GROQ_API_KEY = "your-groq-key"
+GROQ_MODEL = "openai/gpt-oss-20b"
+GROQ_VISION_MODEL = "qwen/qwen3.6-27b"
 
 OPENROUTER_API_KEY = "your-openrouter-key"
 OPENROUTER_MODEL = "openrouter/free"
@@ -668,7 +688,7 @@ omnirag/
 ├── providers/
 │   ├── http.py                # shared transport + status→exception mapping
 │   ├── errors.py              # explicit failure classification
-│   ├── llm/                   # gemini · openrouter · openai · anthropic · mock · router
+│   ├── llm/                   # gemini · groq · openrouter · openai · anthropic · mock · router
 │   ├── embeddings/            # openai · gemini · cohere · hashing
 │   ├── ocr/                   # vision-LLM · tesseract · null
 │   └── rerank/                # cohere · jina · llm · heuristic

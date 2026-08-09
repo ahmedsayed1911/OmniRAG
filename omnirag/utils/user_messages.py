@@ -20,7 +20,7 @@ _CONFIG_MARKERS = (
     "api_key", "api key", "credential", "not configured", "streamlit secrets",
 )
 _PROVIDER_MARKERS = (
-    "gemini", "openrouter", "provider", "fallback", "failover", "endpoint",
+    "gemini", "groq", "openrouter", "provider", "fallback", "failover", "endpoint",
     "rate limit", "rate-limit", "quota", "credits", "payment required",
     "embedding", "reranker", "vector store", "qdrant", "faiss", "chroma",
     "http 4", "http 5", " 402", " 429", " 500", " 502", " 503", " 504",
