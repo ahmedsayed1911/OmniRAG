@@ -11,6 +11,8 @@ before the user has uploaded anything would just slow down first paint.
 
 from __future__ import annotations
 
+import os
+import subprocess
 import threading
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
@@ -58,7 +60,16 @@ class OmniRAGEngine:
 
     def __init__(self, settings: Optional[AppSettings] = None):
         self.settings = settings or get_settings()
+        self.revision = _runtime_revision()
         configure_logging(self.settings.log_level)
+        logger.info(
+            "Runtime revision=%s LLM configuration chain=%s LLM_MAX_OUTPUT_TOKENS=%d "
+            "LLM_EXHAUSTIVE_MAX_OUTPUT_TOKENS=%d",
+            self.revision,
+            self.settings.llm.chain_label,
+            self.settings.llm.max_output_tokens,
+            self.settings.llm.exhaustive_max_output_tokens,
+        )
 
         self._lock = threading.RLock()
         self._llm: Optional[BaseLLMProvider] = None
@@ -247,11 +258,32 @@ _engine: Optional[OmniRAGEngine] = None
 _engine_lock = threading.Lock()
 
 
+def _runtime_revision() -> str:
+    for name in ("STREAMLIT_GIT_COMMIT", "GIT_COMMIT", "SOURCE_VERSION"):
+        value = os.environ.get(name, "").strip()
+        if value:
+            return value[:12]
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "--short=12", "HEAD"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=2,
+        ).strip()
+    except Exception:
+        return "unknown"
+
+
 def get_engine(settings: Optional[AppSettings] = None) -> OmniRAGEngine:
     global _engine
+    resolved = settings or get_settings()
     with _engine_lock:
-        if _engine is None:
-            _engine = OmniRAGEngine(settings)
+        if _engine is None or _engine.settings != resolved:
+            if _engine is not None:
+                logger.warning(
+                    "Runtime configuration changed; rebuilding cached engine and providers"
+                )
+            _engine = OmniRAGEngine(resolved)
         return _engine
 
 

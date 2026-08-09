@@ -7,6 +7,11 @@ import json
 
 import streamlit.components.v1 as components
 
+from omnirag.config.settings import get_settings
+from omnirag.utils.logging import get_logger
+
+logger = get_logger(__name__)
+
 
 def copy_component_html(text: str, component_id: str = "copy_message") -> str:
     """Build an isolated clipboard button without exposing hidden metadata."""
@@ -45,6 +50,12 @@ def render_copy_button(*, text: str, key: str) -> None:
     # stable message key is embedded in the isolated payload for deterministic
     # DOM identity without creating a Streamlit widget/rerun.
     components.html(copy_component_html(text, key), height=28, scrolling=False)
+    if get_settings().debug_generation:
+        logger.info(
+            "Generation lifecycle stage=clipboard component_id=%s clipboard_chars=%d",
+            key,
+            len(text),
+        )
 
 
 def action_key(action: str, message_id: str) -> str:

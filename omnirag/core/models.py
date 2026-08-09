@@ -482,6 +482,8 @@ class AnswerResult(OmniModel):
     warnings: List[str] = Field(default_factory=list)
     finish_reason: str = ""
     continued: bool = False
+    generation_id: str = ""
+    generation_debug: Dict[str, Any] = Field(default_factory=dict)
 
 
 class IngestionResult(OmniModel):

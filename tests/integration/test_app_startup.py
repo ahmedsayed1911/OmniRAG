@@ -164,6 +164,32 @@ class TestZeroConfigurationStartup:
         assert not app.text_area
         assert app.session_state[MESSAGES_KEY][0].content == user.content
 
+    def test_interrupted_generation_never_becomes_a_partial_assistant_message(
+        self, session_id
+    ):
+        from streamlit.testing.v1 import AppTest
+
+        from omnirag.core.enums import Role
+        from omnirag.core.models import ChatMessage
+        from omnirag.ui.state import GENERATION_KEY, MESSAGES_KEY, SESSION_KEY
+
+        user = ChatMessage(role=Role.USER, content="List every failed test")
+        app = AppTest.from_file(str(ROOT / "app.py"))
+        app.session_state[SESSION_KEY] = session_id
+        app.session_state[MESSAGES_KEY] = [user]
+        app.session_state[GENERATION_KEY] = {
+            "status": "generating",
+            "generation_id": "interrupted-generation",
+            "user_message_id": user.message_id,
+        }
+
+        app.run(timeout=20)
+
+        assert not app.exception
+        assert app.session_state[GENERATION_KEY]["status"] == "interrupted"
+        assert app.session_state[MESSAGES_KEY] == [user]
+        assert any("No partial assistant answer was saved" in item.value for item in app.warning)
+
 
 class TestRepositoryHygiene:
     def test_no_env_file_is_committed(self):

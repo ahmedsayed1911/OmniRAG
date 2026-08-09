@@ -276,6 +276,7 @@ class AppSettings:
     environment: str = "production"
     log_level: str = "INFO"
     debug_panels: bool = False
+    debug_generation: bool = False
     workspace_dir: str = ""
     session_ttl_minutes: int = 240
     max_history_messages: int = 10
@@ -478,6 +479,7 @@ def build_settings() -> AppSettings:
         environment=_get("APP_ENV", "production"),
         log_level=_get("LOG_LEVEL", "INFO").upper(),
         debug_panels=_get_bool("DEBUG_PANELS", False),
+        debug_generation=_get_bool("OMNIRAG_DEBUG_GENERATION", False),
         workspace_dir=_get("OMNIRAG_WORKSPACE"),
         session_ttl_minutes=_get_int("SESSION_TTL_MINUTES", 240),
         max_history_messages=_get_int("MAX_HISTORY_MESSAGES", 10),

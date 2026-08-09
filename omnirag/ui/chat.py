@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html
+import uuid
 from typing import List, Optional
 
 import streamlit as st
@@ -41,11 +42,17 @@ FALLBACK_PROMPTS = [
 
 def render() -> None:
     """Draw the main panel."""
+    interrupted = state.recover_interrupted_generation()
     history = state.messages()
     documents = state.ready_documents()
     action_error = state.take_action_error()
     if action_error:
         st.error(action_error)
+    if interrupted:
+        st.warning(
+            "The previous generation was interrupted by an app rerun. No partial "
+            "assistant answer was saved; use Regenerate to retry the prompt."
+        )
 
     if not history:
         _render_welcome(bool(documents))
@@ -117,6 +124,16 @@ def _render_message(message: ChatMessage, index: int) -> None:
         if message.error:
             render_error(message.content)
         else:
+            if state.settings().debug_generation:
+                message.debug["rendered_chars"] = len(message.content)
+                logger.info(
+                    "Generation lifecycle stage=render generation_id=%s message_id=%s "
+                    "render_chars=%d finish_reason=%s",
+                    message.debug.get("generation_id", ""),
+                    message.message_id,
+                    len(message.content),
+                    message.debug.get("finish_reason", "unspecified"),
+                )
             rtl_markdown(message.content)
 
         if message.role == Role.USER:
@@ -205,6 +222,8 @@ def _regenerate(message_id: str, *, edited_text: Optional[str] = None) -> None:
     current = list(state.messages())
     try:
         plan = plan_regeneration(current, message_id, edited_text=edited_text)
+        generation_id = uuid.uuid4().hex
+        state.begin_generation(generation_id, plan.user_message_id)
         with st.spinner("Searching your documents again…"):
             answer = state.chat_service().answer(
                 ChatRequest(
@@ -213,6 +232,7 @@ def _regenerate(message_id: str, *, edited_text: Optional[str] = None) -> None:
                     document_ids=state.selected_document_ids(),
                     history=plan.history,
                     user_message_id=plan.user_message_id,
+                    generation_id=generation_id,
                 )
             )
         if answer.error:
@@ -220,6 +240,7 @@ def _regenerate(message_id: str, *, edited_text: Optional[str] = None) -> None:
         else:
             state.replace_messages(apply_regeneration(current, plan, answer))
             state.set_editing_message(None)
+        state.complete_generation()
     except Exception as exc:  # noqa: BLE001 - preserve the valid old turn
         logger.exception("Message regeneration failed")
         state.set_action_error(f"Could not regenerate this message ({type(exc).__name__}).")
@@ -260,9 +281,32 @@ def _render_message_footer(message: ChatMessage) -> None:
         if bits:
             caption(" · ".join(bits))
 
-    if state.settings().debug_panels:
+    if state.settings().debug_generation:
+        with st.expander("Generation diagnostics", expanded=False):
+            st.json(_generation_debug_payload(message), expanded=False)
+    elif state.settings().debug_panels:
         with st.expander("🔧 Debug", expanded=False):
             st.json(debug, expanded=False)
+
+
+def _generation_debug_payload(message: ChatMessage) -> dict:
+    debug = message.debug or {}
+    return {
+        "Revision": getattr(state.engine(), "revision", "unknown"),
+        "Generation ID": debug.get("generation_id", ""),
+        "Message ID": message.message_id,
+        "Provider": debug.get("provider", ""),
+        "Model": debug.get("model", ""),
+        "Query scope": debug.get("query_scope", "FOCUSED"),
+        "Requested output tokens": debug.get("requested_output_tokens")
+        or debug.get("requested_max_output_tokens"),
+        "Finish reason": debug.get("finish_reason", ""),
+        "Raw chars": debug.get("provider_raw_chars"),
+        "Parsed chars": debug.get("parsed_chars"),
+        "Stored chars": len(message.content),
+        "Rendered chars": debug.get("rendered_chars", len(message.content)),
+        "Continuation count": debug.get("continuation_count", 0),
+    }
 
 
 def _used_fallback(debug: dict) -> bool:
@@ -303,18 +347,34 @@ def _handle_input(has_documents: bool) -> None:
 
     user_message = ChatMessage(role=Role.USER, content=prompt)
     state.add_message(user_message)
+    generation_id = uuid.uuid4().hex
+    state.begin_generation(generation_id, user_message.message_id)
 
     with st.chat_message("user", avatar="🧑"):
         rtl_markdown(prompt)
 
     with st.chat_message("assistant", avatar="🔷"):
         with st.spinner("Searching your documents…"):
-            answer = _answer(prompt, user_message.message_id)
+            answer = _answer(prompt, user_message.message_id, generation_id)
+    if state.settings().debug_generation:
+        logger.info(
+            "Generation lifecycle stage=pre_storage generation_id=%s message_id=%s "
+            "chat_message_chars=%d finish_reason=%s",
+            generation_id,
+            answer.message_id,
+            len(answer.content),
+            answer.debug.get("finish_reason", "unspecified"),
+        )
     state.add_message(answer)
+    state.complete_generation()
     st.rerun()
 
 
-def _answer(prompt: str, user_message_id: Optional[str] = None) -> ChatMessage:
+def _answer(
+    prompt: str,
+    user_message_id: Optional[str] = None,
+    generation_id: str = "",
+) -> ChatMessage:
     service = state.chat_service()
     history = [m for m in state.messages() if m.role in (Role.USER, Role.ASSISTANT)][:-1]
     try:
@@ -325,6 +385,7 @@ def _answer(prompt: str, user_message_id: Optional[str] = None) -> ChatMessage:
                 document_ids=state.selected_document_ids(),
                 history=history,
                 user_message_id=user_message_id,
+                generation_id=generation_id,
             )
         )
     except Exception as exc:  # noqa: BLE001 - the UI must never crash

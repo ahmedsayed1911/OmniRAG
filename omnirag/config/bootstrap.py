@@ -21,6 +21,12 @@ _SECTION_PREFIXES = {
     "vision": "VISION_",
 }
 
+# Values previously applied by this module may be refreshed on a later
+# Streamlit rerun. A host environment value that differs from the tracked value
+# is still authoritative and is never overwritten unless ``override=True``.
+_DOTENV_VALUES: dict[str, str] = {}
+_SECRET_VALUES: dict[str, str] = {}
+
 
 def load_dotenv(path: str = ".env", *, override: bool = False) -> int:
     """Minimal ``.env`` loader (no extra dependency).
@@ -41,8 +47,7 @@ def load_dotenv(path: str = ".env", *, override: bool = False) -> int:
             value = value.strip().strip('"').strip("'")
             if not key:
                 continue
-            if override or key not in os.environ:
-                os.environ[key] = value
+            if _set_tracked_env(key, value, override, _DOTENV_VALUES):
                 applied += 1
     return applied
 
@@ -88,9 +93,18 @@ def _iter_items(mapping: Mapping[str, Any]) -> Iterable[tuple[str, Any]]:
 def _set_env(name: str, value: Any, override: bool) -> int:
     if value is None:
         return 0
-    if not override and name in os.environ and os.environ[name]:
+    return _set_tracked_env(name, str(value), override, _SECRET_VALUES)
+
+
+def _set_tracked_env(
+    name: str, value: str, override: bool, tracked: dict[str, str]
+) -> int:
+    current = os.environ.get(name, "")
+    previously_applied = name in tracked and current == tracked[name]
+    if not override and current and not previously_applied:
         return 0
-    os.environ[name] = str(value)
+    os.environ[name] = value
+    tracked[name] = value
     return 1
 
 

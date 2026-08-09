@@ -108,6 +108,20 @@ class TestSecretHandling:
 
         assert build_settings().llm.endpoints[0].api_key == "from-env"
 
+    def test_streamlit_secret_value_refreshes_without_overriding_host_env(
+        self, monkeypatch
+    ):
+        monkeypatch.delenv("LLM_MAX_OUTPUT_TOKENS", raising=False)
+        apply_secrets({"LLM_MAX_OUTPUT_TOKENS": "1400"})
+        assert build_settings().llm.max_output_tokens == 1400
+
+        apply_secrets({"LLM_MAX_OUTPUT_TOKENS": "4096"})
+        assert build_settings().llm.max_output_tokens == 4096
+
+        monkeypatch.setenv("LLM_MAX_OUTPUT_TOKENS", "7777")
+        apply_secrets({"LLM_MAX_OUTPUT_TOKENS": "8192"})
+        assert build_settings().llm.max_output_tokens == 7777
+
     def test_missing_dotenv_file_is_not_an_error(self):
         assert load_dotenv("definitely-not-a-real-file.env") == 0
 
@@ -123,6 +137,32 @@ class TestCaching:
 
         reset_settings_cache()
         assert get_settings().retrieval.top_k == 22
+
+    def test_streamlit_engine_rebuilds_when_output_budget_changes(self, monkeypatch):
+        from omnirag.services.engine import reset_engine
+        from omnirag.ui import state
+
+        reset_engine()
+        monkeypatch.setenv("LLM_MAX_OUTPUT_TOKENS", "1400")
+        monkeypatch.setenv("LLM_EXHAUSTIVE_MAX_OUTPUT_TOKENS", "1400")
+        reset_settings_cache()
+        first = state.engine()
+
+        monkeypatch.setenv("LLM_MAX_OUTPUT_TOKENS", "4096")
+        monkeypatch.setenv("LLM_EXHAUSTIVE_MAX_OUTPUT_TOKENS", "8192")
+        reset_settings_cache()
+        second = state.engine()
+
+        assert second is not first
+        assert second.settings.llm.max_output_tokens == 4096
+        assert second.settings.llm.exhaustive_max_output_tokens == 8192
+
+    def test_generation_debug_mode_is_disabled_by_default_and_configurable(
+        self, monkeypatch
+    ):
+        assert build_settings().debug_generation is False
+        monkeypatch.setenv("OMNIRAG_DEBUG_GENERATION", "true")
+        assert build_settings().debug_generation is True
 
 
 class TestEmbeddingIndependence:

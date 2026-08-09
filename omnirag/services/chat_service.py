@@ -40,6 +40,7 @@ class ChatRequest:
     document_ids: Optional[Sequence[str]] = None
     history: Sequence[ChatMessage] = field(default_factory=list)
     user_message_id: Optional[str] = None
+    generation_id: str = ""
 
 
 class ChatService:
@@ -92,6 +93,7 @@ class ChatService:
                     history=request.history,
                     plan=plan,
                     answer_language=plan.answer_language,
+                    generation_id=request.generation_id,
                 )
             )
             generation_ms = (time.perf_counter() - generation_started) * 1000
@@ -150,12 +152,15 @@ class ChatService:
                 "continued": result.continued,
                 "returned_chars": len(result.answer),
                 "returned_token_estimate": estimate_tokens(result.answer),
+                "generation_id": result.generation_id,
+                **dict(result.generation_debug or {}),
             },
             reply_to_message_id=request.user_message_id,
         )
         logger.info(
             "Stored assistant message query_scope=%s provider=%s model=%s "
-            "finish_reason=%s stored_chars=%d stored_token_estimate=%d continued=%s",
+            "finish_reason=%s chat_service_chars=%d stored_token_estimate=%d "
+            "continued=%s generation_id=%s message_id=%s",
             retrieval.query_scope,
             message.debug.get("provider", ""),
             message.debug.get("model", ""),
@@ -163,6 +168,8 @@ class ChatService:
             len(message.content),
             estimate_tokens(message.content),
             result.continued,
+            result.generation_id,
+            message.message_id,
         )
         return message
 

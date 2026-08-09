@@ -71,6 +71,7 @@ def post_json(
     headers: Optional[Dict[str, str]] = None,
     timeout_s: float = 60.0,
     provider: str = "provider",
+    diagnostics: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """POST JSON and return the decoded body, raising typed errors on failure."""
     client = get_client(timeout_s)
@@ -86,7 +87,18 @@ def post_json(
             user_message=f"Could not reach the {provider} API. Check your network and base URL.",
         ) from exc
 
-    return _handle_response(response, provider=provider)
+    if diagnostics is not None:
+        diagnostics.update(
+            {
+                "http_status": int(response.status_code),
+                "content_length": response.headers.get("content-length", ""),
+                "response_fully_received": True,
+            }
+        )
+    body = _handle_response(response, provider=provider)
+    if diagnostics is not None:
+        diagnostics["json_parsed"] = True
+    return body
 
 
 def _handle_response(response: Any, *, provider: str) -> Dict[str, Any]:

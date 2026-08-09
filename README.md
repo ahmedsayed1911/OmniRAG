@@ -394,6 +394,7 @@ Other vendors (`openai`, `anthropic`, any OpenAI-compatible gateway via
 | `QUERY_REWRITE` | `true` | LLM query expansion |
 | `MAX_UPLOAD_MB` / `MAX_FILES` | `50` / `25` | Upload limits |
 | `LOG_LEVEL` / `DEBUG_PANELS` | `INFO` / `false` | Diagnostics |
+| `OMNIRAG_DEBUG_GENERATION` | `false` | Safe raw/parsed/stored/rendered character counters |
 
 ### Embeddings are independent of the LLM chain
 

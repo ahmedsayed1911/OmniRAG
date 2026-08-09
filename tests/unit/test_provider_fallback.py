@@ -502,6 +502,7 @@ class TestHTTPClassification:
                         "totalTokenCount": 12,
                     },
                 },
+                headers={"content-length": "321"},
             )
         ]
         provider = GeminiLLM(api_key="k", model="gemini-3.6-flash", retry_attempts=1)
@@ -511,6 +512,19 @@ class TestHTTPClassification:
         assert response.provider == "gemini"
         assert response.finish_reason == "STOP"
         assert response.usage["candidatesTokenCount"] == 7
+        assert response.diagnostics == {
+            "http_status": 200,
+            "content_length": "321",
+            "response_fully_received": True,
+            "json_parsed": True,
+            "provider_raw_chars": 11,
+            "parsed_chars": 11,
+            "candidate_count": 1,
+            "content_parts_count": 2,
+            "prompt_token_count": 5,
+            "candidates_token_count": 7,
+            "total_token_count": 12,
+        }
         assert self.requests[0]["url"].endswith(
             "/models/gemini-3.6-flash:generateContent"
         )

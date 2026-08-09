@@ -13,7 +13,6 @@ import streamlit as st
 
 from omnirag.core.enums import BlockType, IngestionStatus, Language, SourceKind
 from omnirag.core.models import DocumentSummary
-from omnirag.utils.language import is_rtl
 
 # --------------------------------------------------------------------------- #
 STATUS_STYLE = {
@@ -138,19 +137,8 @@ def document_meta_line(summary: DocumentSummary) -> str:
 
 
 def rtl_markdown(text: str) -> None:
-    """Render text, switching to right-to-left layout for Arabic content."""
-    if is_rtl(text):
-        st.markdown(
-            f'<div class="omni-rtl">{_markdown_safe(text)}</div>', unsafe_allow_html=True
-        )
-    else:
-        st.markdown(text)
-
-
-def _markdown_safe(text: str) -> str:
-    """Minimal HTML for the RTL wrapper: escape, then restore line breaks."""
-    escaped = html.escape(text)
-    return escaped.replace("\n\n", "<br><br>").replace("\n", "<br>")
+    """Render the exact model text without passing it through unsafe HTML."""
+    st.markdown(text)
 
 
 def caption(text: str) -> None:

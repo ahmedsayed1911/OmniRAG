@@ -8,6 +8,7 @@ from omnirag.core.enums import Role
 from omnirag.core.exceptions import LLMError, ProviderPolicyError
 from omnirag.providers.http import post_json
 from omnirag.providers.llm.base import BaseLLMProvider, LLMMessage, LLMResponse
+from omnirag.providers.llm.context import current_generation_id
 from omnirag.utils.images import to_base64
 from omnirag.utils.logging import get_logger
 from omnirag.utils.retry import retry_call
@@ -104,14 +105,20 @@ class GeminiLLM(BaseLLMProvider):
         url = f"{self.base_url}/models/{target_model}:generateContent"
         headers = {"x-goog-api-key": self.api_key, "Content-Type": "application/json"}
 
+        transport_diagnostics: Dict[str, Any] = {}
         body = retry_call(
             lambda: post_json(
-                url, payload, headers=headers, timeout_s=self.timeout_s, provider=self.name
+                url,
+                payload,
+                headers=headers,
+                timeout_s=self.timeout_s,
+                provider=self.name,
+                diagnostics=transport_diagnostics,
             ),
             attempts=self.retry_attempts,
             operation=f"gemini/generateContent ({target_model})",
         )
-        return self._parse(body, target_model)
+        return self._parse(body, target_model, transport_diagnostics)
 
     def _build_contents(self, messages: Sequence[LLMMessage]) -> List[Dict[str, Any]]:
         contents: List[Dict[str, Any]] = []
@@ -136,7 +143,12 @@ class GeminiLLM(BaseLLMProvider):
             contents.append({"role": role, "parts": parts or [{"text": ""}]})
         return contents or [{"role": "user", "parts": [{"text": ""}]}]
 
-    def _parse(self, body: Dict[str, Any], model: str) -> LLMResponse:
+    def _parse(
+        self,
+        body: Dict[str, Any],
+        model: str,
+        transport_diagnostics: Optional[Dict[str, Any]] = None,
+    ) -> LLMResponse:
         candidates = body.get("candidates") or []
         if not candidates:
             blocked = (body.get("promptFeedback") or {}).get("blockReason")
@@ -161,7 +173,40 @@ class GeminiLLM(BaseLLMProvider):
         candidate = candidates[0]
         finish_reason = str(candidate.get("finishReason") or "")
         parts = ((candidate.get("content") or {}).get("parts")) or []
-        text = "".join(p.get("text", "") for p in parts if isinstance(p, dict)).strip()
+        raw_text = "".join(p.get("text", "") for p in parts if isinstance(p, dict))
+        text = raw_text.strip()
+        usage = body.get("usageMetadata") or {}
+        diagnostics = {
+            **(transport_diagnostics or {}),
+            "provider_raw_chars": len(raw_text),
+            "parsed_chars": len(text),
+            "candidate_count": len(candidates),
+            "content_parts_count": len(parts),
+            "prompt_token_count": usage.get("promptTokenCount"),
+            "candidates_token_count": usage.get("candidatesTokenCount"),
+            "total_token_count": usage.get("totalTokenCount"),
+        }
+        logger.info(
+            "Generation lifecycle stage=provider generation_id=%s provider=gemini "
+            "model=%s finish_reason=%s provider_raw_chars=%d parsed_chars=%d "
+            "candidate_count=%d content_parts_count=%d http_status=%s "
+            "content_length=%s response_fully_received=%s json_parsed=%s "
+            "prompt_token_count=%s candidates_token_count=%s total_token_count=%s",
+            current_generation_id(),
+            model,
+            finish_reason or "unspecified",
+            len(raw_text),
+            len(text),
+            len(candidates),
+            len(parts),
+            diagnostics.get("http_status", "n/a"),
+            diagnostics.get("content_length", "n/a"),
+            diagnostics.get("response_fully_received", False),
+            diagnostics.get("json_parsed", False),
+            diagnostics.get("prompt_token_count", "n/a"),
+            diagnostics.get("candidates_token_count", "n/a"),
+            diagnostics.get("total_token_count", "n/a"),
+        )
 
         if not text and finish_reason in POLICY_FINISH_REASONS:
             raise ProviderPolicyError(
@@ -183,6 +228,7 @@ class GeminiLLM(BaseLLMProvider):
             text=text,
             model=model,
             finish_reason=finish_reason,
-            usage=body.get("usageMetadata") or {},
+            usage=usage,
             provider=self.name,
+            diagnostics=diagnostics,
         )

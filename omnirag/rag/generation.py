@@ -17,6 +17,7 @@ Contract enforced by the prompt *and* by code:
 from __future__ import annotations
 
 import time
+import uuid
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -32,7 +33,7 @@ from omnirag.core.models import (
     SearchResult,
 )
 from omnirag.providers.llm.base import BaseLLMProvider, ImagePart, LLMMessage, LLMResponse
-from omnirag.providers.llm.context import llm_operation
+from omnirag.providers.llm.context import generation_context, llm_operation
 from omnirag.rag.citations import build_citations, verify_and_clean
 from omnirag.rag.query_rewrite import QueryPlan
 from omnirag.storage.files import FileStore
@@ -96,6 +97,7 @@ class GenerationRequest:
     history: Sequence[ChatMessage] = field(default_factory=list)
     plan: Optional[QueryPlan] = None
     answer_language: Optional[Language] = None
+    generation_id: str = ""
 
 
 class AnswerGenerator:
@@ -125,12 +127,13 @@ class AnswerGenerator:
         messages = self._build_messages(request, context_text, images)
         active_messages = messages
         output_budget = self._output_budget(request)
+        generation_id = request.generation_id or uuid.uuid4().hex
         input_token_estimate = sum(estimate_tokens(message.text) for message in messages)
         started = time.perf_counter()
         generation_warnings: List[str] = []
 
         try:
-            with llm_operation("final_answer"):
+            with generation_context(generation_id), llm_operation("final_answer"):
                 response = self.llm.complete(
                     messages,
                     system=self._system_prompt(request),
@@ -145,7 +148,7 @@ class AnswerGenerator:
             if not images:
                 raise
             active_messages = self._build_messages(request, context_text, [])
-            with llm_operation("final_answer_text_only"):
+            with generation_context(generation_id), llm_operation("final_answer_text_only"):
                 response = self.llm.complete(
                     active_messages,
                     system=self._system_prompt(request),
@@ -156,7 +159,7 @@ class AnswerGenerator:
             generation_warnings.append(exc.user_message)
 
         response, continued, continuation_warnings = self._continue_once(
-            request, active_messages, response, output_budget
+            request, active_messages, response, output_budget, generation_id
         )
         generation_warnings.extend(continuation_warnings)
 
@@ -178,8 +181,22 @@ class AnswerGenerator:
             continued,
             elapsed,
         )
-        result = self._finish(response, citations, len(images), continued=continued)
+        result = self._finish(
+            response,
+            citations,
+            len(images),
+            continued=continued,
+            generation_id=generation_id,
+            requested_output_tokens=output_budget,
+        )
         result.warnings.extend(generation_warnings)
+        logger.info(
+            "Generation lifecycle stage=generation_result generation_id=%s "
+            "finish_reason=%s generation_result_chars=%d",
+            generation_id,
+            result.finish_reason or "unspecified",
+            len(result.answer),
+        )
         return result
 
     def _output_budget(self, request: GenerationRequest) -> int:
@@ -198,6 +215,7 @@ class AnswerGenerator:
         messages: Sequence[LLMMessage],
         response: LLMResponse,
         output_budget: int,
+        generation_id: str,
     ) -> tuple[LLMResponse, bool, List[str]]:
         """Continue once only when the provider explicitly hit its token cap."""
         if response.finish_reason.upper() not in OUTPUT_LIMIT_REASONS:
@@ -209,7 +227,9 @@ class AnswerGenerator:
             LLMMessage(role=Role.USER, text=CONTINUATION_PROMPT),
         ]
         try:
-            with llm_operation("final_answer_continuation"):
+            with generation_context(generation_id), llm_operation(
+                "final_answer_continuation"
+            ):
                 continuation = self.llm.complete(
                     continuation_messages,
                     system=self._system_prompt(request),
@@ -238,6 +258,16 @@ class AnswerGenerator:
             provider=continuation.provider or response.provider,
             fallback_used=response.fallback_used or continuation.fallback_used,
             attempts=[*response.attempts, *continuation.attempts],
+            diagnostics={
+                **dict(response.diagnostics or {}),
+                "continuation_provider_raw_chars": (continuation.diagnostics or {}).get(
+                    "provider_raw_chars", len(continuation.text)
+                ),
+                "continuation_parsed_chars": (continuation.diagnostics or {}).get(
+                    "parsed_chars", len(continuation.text)
+                ),
+                "combined_chars": len(combined),
+            },
         )
         warnings = ["Response continued automatically because the model reached its output limit."]
         if continuation.finish_reason.upper() in OUTPUT_LIMIT_REASONS:
@@ -255,6 +285,8 @@ class AnswerGenerator:
         image_count: int,
         *,
         continued: bool = False,
+        generation_id: str = "",
+        requested_output_tokens: int = 0,
     ) -> AnswerResult:
         bundle = verify_and_clean(response.text, citations)
         answer = bundle.answer
@@ -284,6 +316,19 @@ class AnswerGenerator:
             warnings=warnings,
             finish_reason=response.finish_reason,
             continued=continued,
+            generation_id=generation_id,
+            generation_debug={
+                **dict(response.diagnostics or {}),
+                "provider_raw_chars": (response.diagnostics or {}).get(
+                    "provider_raw_chars", len(response.text)
+                ),
+                "parsed_chars": (response.diagnostics or {}).get(
+                    "parsed_chars", len(response.text)
+                ),
+                "grounded_result_chars": len(answer),
+                "requested_output_tokens": requested_output_tokens,
+                "continuation_count": 1 if continued else 0,
+            },
         )
 
     def _no_evidence_answer(self, request: GenerationRequest) -> AnswerResult:

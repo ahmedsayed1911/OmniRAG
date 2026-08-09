@@ -81,6 +81,7 @@ section[data-testid="stSidebar"] .block-container { padding-top: 1.2rem; }
 /* ---------- Arabic / RTL ---------- */
 .omni-rtl { direction:rtl; text-align:right; }
 [data-testid="stChatMessageContent"] p:lang(ar) { direction:rtl; text-align:right; }
+[data-testid="stChatMessageContent"] { unicode-bidi: plaintext; }
 
 /* ---------- misc ---------- */
 .omni-caption { font-size:.72rem; opacity:.55; }

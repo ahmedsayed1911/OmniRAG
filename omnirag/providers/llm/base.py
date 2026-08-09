@@ -53,6 +53,8 @@ class LLMResponse:
     #: Human-readable trail of provider attempts, e.g.
     #: ``["gemini: RateLimitError[recoverable]", "openrouter: ok"]``.
     attempts: List[str] = field(default_factory=list)
+    #: Safe lifecycle counters only; never prompts, response text or headers.
+    diagnostics: Dict[str, Any] = field(default_factory=dict)
 
     @property
     def provider_label(self) -> str:
