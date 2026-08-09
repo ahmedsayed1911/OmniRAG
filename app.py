@@ -47,8 +47,7 @@ def main() -> None:
     except Exception as exc:  # noqa: BLE001 - a sidebar fault must not blank the app
         logger.exception("Sidebar rendering failed")
         st.sidebar.error(
-            f"The sidebar could not be displayed ({type(exc).__name__}). "
-            "Reload the page to try again."
+            "The sidebar could not be displayed. Reload the page to try again."
         )
 
     try:
@@ -56,8 +55,7 @@ def main() -> None:
     except Exception as exc:  # noqa: BLE001
         logger.exception("Main panel rendering failed")
         st.error(
-            f"Something went wrong while rendering the page ({type(exc).__name__}). "
-            "Reload the page to continue."
+            "Something went wrong while rendering the page. Reload the page to continue."
         )
 
 

@@ -397,8 +397,8 @@ Other vendors (`openai`, `anthropic`, any OpenAI-compatible gateway via
 | `RETRIEVAL_STRATEGY` | `hybrid` | `hybrid` \| `vector` \| `keyword` |
 | `QUERY_REWRITE` | `true` | LLM query expansion |
 | `MAX_UPLOAD_MB` / `MAX_FILES` | `50` / `25` | Upload limits |
-| `LOG_LEVEL` / `DEBUG_PANELS` | `INFO` / `false` | Diagnostics |
-| `OMNIRAG_DEBUG_GENERATION` | `false` | Safe raw/parsed/stored/rendered character counters |
+| `LOG_LEVEL` / `DEBUG_PANELS` | `INFO` / `false` | Server logging and non-sensitive diagnostics |
+| `OMNIRAG_DEBUG_GENERATION` | `false` | Internal generation diagnostics, including provider/model details; keep disabled for normal users |
 
 ### Embeddings are independent of the LLM chain
 

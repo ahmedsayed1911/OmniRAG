@@ -24,6 +24,11 @@ from omnirag.ui.components import (
 )
 from omnirag.utils.hashing import short_hash
 from omnirag.utils.logging import get_logger
+from omnirag.utils.user_messages import (
+    SERVICE_NOT_CONFIGURED,
+    public_error_text,
+    public_processing_note,
+)
 
 logger = get_logger(__name__)
 
@@ -138,7 +143,12 @@ def _process_uploads(pending: List[tuple[str, UploadedFile]]) -> None:
             elif result.status == IngestionStatus.DUPLICATE:
                 stage_text.caption("↩︎ Already indexed in this session")
             else:
-                stage_text.caption(f"❌ {result.error or 'Failed'}")
+                stage_text.caption(
+                    "❌ " + public_error_text(
+                        result.error or "Processing failed",
+                        debug=state.settings().debug_generation,
+                    )
+                )
 
         progress_bar.progress(1.0)
         failed = [r for r in results if r.status == IngestionStatus.FAILED]
@@ -155,9 +165,13 @@ def _process_uploads(pending: List[tuple[str, UploadedFile]]) -> None:
 
     for result in results:
         if result.status == IngestionStatus.FAILED and result.error:
-            st.error(result.error)
+            st.error(public_error_text(
+                result.error, debug=state.settings().debug_generation
+            ))
         for warning in result.warnings[:3]:
-            st.info(warning, icon="ℹ️")
+            st.info(public_processing_note(
+                warning, debug=state.settings().debug_generation
+            ), icon="ℹ️")
 
     st.rerun()
 
@@ -211,11 +225,15 @@ def _render_document_row(summary: DocumentSummary, *, is_active: bool) -> None:
             _remove_document(summary)
 
     if summary.error:
-        st.caption(f"⚠️ {summary.error}")
+        st.caption("⚠️ " + public_error_text(
+            summary.error, debug=state.settings().debug_generation
+        ))
     elif summary.warnings:
         with st.expander(f"{len(summary.warnings)} processing note(s)", expanded=False):
             for warning in summary.warnings:
-                st.caption(f"• {warning}")
+                st.caption("• " + public_processing_note(
+                    warning, debug=state.settings().debug_generation
+                ))
     st.write("")
 
 
@@ -308,7 +326,10 @@ def _reindex() -> None:
         )
         state.forget_processed()
     for filename, error in report.failed:
-        st.error(f"{filename}: {error}")
+        safe_error = public_error_text(
+            str(error), debug=state.settings().debug_generation
+        )
+        st.error(f"{filename}: {safe_error}")
 
     st.rerun()
 
@@ -318,42 +339,68 @@ def _render_settings() -> None:
     engine = state.engine()
     status = engine.status()
 
-    with st.expander("⚙️ Status & settings", expanded=not status.ready):
+    diagnostic_mode = state.settings().debug_generation
+    label = "⚙️ Diagnostics" if diagnostic_mode else "⚙️ System status"
+    with st.expander(label, expanded=not status.ready):
         if not status.ready:
-            for issue in status.issues:
-                st.error(issue, icon="🔑")
+            if diagnostic_mode:
+                for issue in status.issues:
+                    st.error(issue, icon="🔑")
+            else:
+                st.error(SERVICE_NOT_CONFIGURED, icon="🔑")
+        else:
+            st.success("Ready")
 
-        st.markdown("**Providers**")
-        st.markdown(
-            "\n".join(
-                [
-                    f"- **LLM chain:** `{status.llm_chain}`",
-                    f"- **Embeddings:** `{status.embedding_provider}` / `{status.embedding_model}`",
-                    f"- **Vector store:** `{status.vector_store}`",
-                    f"- **Reranker:** `{status.reranker}`",
-                    f"- **OCR:** `{status.ocr_provider}`",
-                    f"- **Vision:** {'available' if status.vision_available else 'unavailable'}",
-                ]
+        if diagnostic_mode:
+            st.markdown("**Internal services**")
+            st.markdown(
+                "\n".join(
+                    [
+                        f"- **LLM chain:** `{status.llm_chain}`",
+                        f"- **Embeddings:** `{status.embedding_provider}` / `{status.embedding_model}`",
+                        f"- **Vector store:** `{status.vector_store}`",
+                        f"- **Reranker:** `{status.reranker}`",
+                        f"- **OCR:** `{status.ocr_provider}`",
+                        f"- **Vision:** {'available' if status.vision_available else 'unavailable'}",
+                    ]
+                )
             )
-        )
-
-        stats = engine.provider_stats()
-        if stats.get("calls"):
-            st.markdown("**Provider usage**")
-            usage = ", ".join(f"`{k}`: {v}" for k, v in stats["by_provider"].items())
-            st.caption(f"{stats['calls']} call(s) — {usage}")
-            if stats.get("failovers"):
-                st.caption(f"↪︎ {stats['failovers']} failover(s) to a backup provider")
-
-        for warning in status.warnings:
-            st.warning(warning, icon="⚠️")
+            stats = engine.provider_stats()
+            if stats.get("calls"):
+                st.markdown("**Provider usage**")
+                usage = ", ".join(
+                    f"`{key}`: {value}" for key, value in stats["by_provider"].items()
+                )
+                st.caption(f"{stats['calls']} call(s) — {usage}")
+                if stats.get("failovers"):
+                    st.caption(f"↪︎ {stats['failovers']} failover(s)")
+            for warning in status.warnings:
+                st.warning(warning, icon="⚠️")
+        else:
+            st.caption(
+                "Document search is available."
+                if status.ready
+                else "Document search is waiting for administrator configuration."
+            )
+            st.caption(
+                "Visual analysis is available."
+                if status.vision_available
+                else "Visual analysis is currently unavailable."
+            )
+            settings = state.settings()
+            if settings.embedding.provider == "hash":
+                st.warning(
+                    "Document search is running in reduced-quality mode.", icon="⚠️"
+                )
+            if not settings.vector_store.use_qdrant:
+                st.caption("The document index resets when the app restarts.")
 
 
 def _render_footer() -> None:
     divider()
     caption(
-        "Documents stay in this browser session only. Configured AI providers "
-        "receive the content needed to answer your questions."
+        "Documents stay in this browser session only. The AI service receives "
+        "only the content needed to answer your questions."
     )
 
 

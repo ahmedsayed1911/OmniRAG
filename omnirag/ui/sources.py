@@ -27,6 +27,7 @@ def render_sources(
     file_store: Optional[FileStore] = None,
     key_prefix: str = "",
     retrieval: Optional[RetrievalResult] = None,
+    show_diagnostics: bool = False,
 ) -> None:
     """Render the source panel beneath an answer."""
     if not citations:
@@ -37,7 +38,7 @@ def render_sources(
     label = f"📎 Sources ({cited_count} cited of {len(citations)} retrieved)"
 
     with st.expander(label, expanded=False):
-        if retrieval is not None:
+        if retrieval is not None and show_diagnostics:
             _render_retrieval_note(retrieval)
 
         for citation in citations:

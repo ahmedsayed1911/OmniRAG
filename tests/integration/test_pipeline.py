@@ -285,6 +285,9 @@ class TestFullPipeline:
         attempts = answer.debug["provider_attempts"]
         assert any("final_answer/gemini" in attempt for attempt in attempts)
         assert any("final_answer/openrouter" in attempt for attempt in attempts)
+        assert answer.debug["provider"] == "openrouter"
+        assert answer.debug["model"] == "google/gemini-3.6-flash"
+        assert answer.debug["warnings"] == []
 
     def test_pptx_answer_cites_slide_numbers(
         self, service, wired, session_id, sample_pptx, recording_llm
@@ -504,7 +507,11 @@ class TestFailureHandling:
         )
 
         assert message.error is not None
-        assert "failed" in message.content.lower() or "provider" in message.content.lower()
+        assert message.content == (
+            "The AI service is temporarily unavailable. Please try again shortly."
+        )
+        assert "gemini" not in message.content.lower()
+        assert "openrouter" not in message.content.lower()
         # The index survived the outage untouched.
         assert wired.vector_store.count(session_id) == indexed
 

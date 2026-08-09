@@ -53,8 +53,8 @@ BLOCK_LABEL = {
 
 SOURCE_LABEL = {
     SourceKind.DIGITAL: "digital text",
-    SourceKind.OCR: "OCR",
-    SourceKind.VISION: "vision model",
+    SourceKind.OCR: "scanned text",
+    SourceKind.VISION: "visual analysis",
     SourceKind.STRUCTURED: "parsed structure",
     SourceKind.DERIVED: "derived",
 }

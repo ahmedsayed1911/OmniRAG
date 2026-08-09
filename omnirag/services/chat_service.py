@@ -30,6 +30,10 @@ from omnirag.services.engine import OmniRAGEngine
 from omnirag.storage.sessions import require_session_id
 from omnirag.utils.logging import get_logger
 from omnirag.utils.text import estimate_tokens
+from omnirag.utils.user_messages import (
+    SERVICE_NOT_CONFIGURED,
+    provider_error_message,
+)
 
 logger = get_logger(__name__)
 
@@ -69,11 +73,7 @@ class ChatService:
             return _error_message("Please enter a question.")
 
         if not self.settings.llm.is_configured:
-            return _error_message(
-                "No language-model provider is configured. Add `GEMINI_API_KEY` "
-                "(primary) or `OPENROUTER_API_KEY` (fallback) to your secrets, "
-                "then reload the app."
-            )
+            return _error_message(SERVICE_NOT_CONFIGURED)
 
         try:
             retrieval = self._retrieve(request, session_id)
@@ -82,9 +82,7 @@ class ChatService:
             return _error_message(exc.user_message)
         except Exception as exc:  # noqa: BLE001
             logger.exception("Unexpected retrieval failure")
-            return _error_message(
-                f"Search over your documents failed ({type(exc).__name__})."
-            )
+            return _error_message("Search over your documents failed. Please try again.")
 
         try:
             generation_started = time.perf_counter()
@@ -103,18 +101,27 @@ class ChatService:
             )
             generation_ms = (time.perf_counter() - generation_started) * 1000
         except MissingCredentialError as exc:
-            return _error_message(exc.user_message)
+            logger.warning("Generation credentials unavailable: %s", exc.detail or exc)
+            return _error_message(
+                exc.user_message if self.settings.debug_generation else SERVICE_NOT_CONFIGURED
+            )
         except ProviderCapabilityError as exc:
-            return _error_message(exc.user_message)
+            logger.warning("Generation capability unavailable: %s", exc.detail or exc)
+            return _error_message(
+                provider_error_message(exc, debug=self.settings.debug_generation)
+            )
         except ProviderError as exc:
             logger.warning("Generation failed: %s", exc.detail or exc)
-            return _error_message(exc.user_message, retrieval=retrieval)
+            return _error_message(
+                provider_error_message(exc, debug=self.settings.debug_generation),
+                retrieval=retrieval,
+            )
         except OmniRAGError as exc:
             return _error_message(exc.user_message, retrieval=retrieval)
         except Exception as exc:  # noqa: BLE001
             logger.exception("Unexpected generation failure")
             return _error_message(
-                f"The answer could not be generated ({type(exc).__name__}).",
+                "The answer could not be generated. Please try again.",
                 retrieval=retrieval,
             )
 

@@ -22,12 +22,17 @@ from omnirag.ui.components import (
 )
 from omnirag.ui.sources import render_sources
 from omnirag.utils.logging import get_logger
+from omnirag.utils.user_messages import (
+    SERVICE_NOT_CONFIGURED,
+    public_error_text,
+    public_generation_warning,
+)
 
 logger = get_logger(__name__)
 
 FEATURES = [
     ("📄", "Any document", "PDF, scans, Word, PowerPoint, images, Markdown and text."),
-    ("👁️", "Sees the visuals", "Charts, diagrams, tables and handwriting — not just OCR."),
+    ("👁️", "Sees the visuals", "Charts, diagrams, tables and handwriting — not just extracted text."),
     ("🌍", "Arabic & English", "Ask in one language, search documents written in the other."),
     ("🔎", "Cited answers", "Every claim links back to a file, page and passage."),
 ]
@@ -47,7 +52,9 @@ def render() -> None:
     documents = state.ready_documents()
     action_error = state.take_action_error()
     if action_error:
-        st.error(action_error)
+        st.error(public_error_text(
+            action_error, debug=state.settings().debug_generation
+        ))
     if interrupted:
         st.warning(
             "The previous generation was interrupted by an app rerun. No partial "
@@ -122,7 +129,10 @@ def _render_message(message: ChatMessage, index: int) -> None:
             _render_editor(message)
             return
         if message.error:
-            render_error(message.content)
+            render_error(public_error_text(
+                message.content,
+                debug=state.settings().debug_generation,
+            ))
         else:
             if state.settings().debug_generation:
                 message.debug["rendered_chars"] = len(message.content)
@@ -147,6 +157,7 @@ def _render_message(message: ChatMessage, index: int) -> None:
                 file_store=state.engine().file_store,
                 key_prefix=f"m{index}",
                 retrieval=message.retrieval,
+                show_diagnostics=state.settings().debug_generation,
             )
 
         _render_message_footer(message)
@@ -243,50 +254,43 @@ def _regenerate(message_id: str, *, edited_text: Optional[str] = None) -> None:
         state.complete_generation()
     except Exception as exc:  # noqa: BLE001 - preserve the valid old turn
         logger.exception("Message regeneration failed")
-        state.set_action_error(f"Could not regenerate this message ({type(exc).__name__}).")
+        state.set_action_error("Could not regenerate this message. Please try again.")
     st.rerun()
 
 
 def _render_message_footer(message: ChatMessage) -> None:
     debug = message.debug or {}
+    diagnostic_mode = state.settings().debug_generation
     warnings: List[str] = list(debug.get("warnings") or [])
     for warning in warnings:
-        st.warning(warning, icon="⚠️")
+        public_warning = public_generation_warning(warning, debug=diagnostic_mode)
+        if public_warning:
+            st.warning(public_warning, icon="⚠️")
 
     if not debug:
         return
 
-    columns = st.columns([0.45, 0.55])
-    with columns[0]:
+    if diagnostic_mode:
         provider_badge(
             str(debug.get("provider", "")),
             str(debug.get("model", "")),
             fallback_used=_used_fallback(debug),
         )
-    with columns[1]:
-        bits = []
-        if debug.get("contexts"):
-            bits.append(f"{debug['contexts']} sources")
-        if debug.get("images_sent"):
-            bits.append(f"{debug['images_sent']} images analysed")
-        if debug.get("elapsed_s"):
-            bits.append(f"{debug['elapsed_s']}s")
-        scope = str(debug.get("query_scope", "FOCUSED"))
-        if scope != "FOCUSED":
-            bits.append(f"Retrieval mode: {scope.title().replace('_', ' ')}")
-            covered = debug.get("pages_covered")
-            total = debug.get("total_pages")
-            if covered and total:
-                bits.append(f"Pages covered: {covered}/{total}")
-        if bits:
-            caption(" · ".join(bits))
 
-    if state.settings().debug_generation:
+    bits = []
+    if debug.get("contexts"):
+        bits.append(f"{debug['contexts']} sources")
+    if debug.get("images_sent"):
+        count = int(debug["images_sent"])
+        bits.append(f"{count} image{'s' if count != 1 else ''} analysed")
+    if debug.get("elapsed_s"):
+        bits.append(f"{debug['elapsed_s']}s")
+    if bits:
+        caption(" · ".join(bits))
+
+    if diagnostic_mode:
         with st.expander("Generation diagnostics", expanded=False):
             st.json(_generation_debug_payload(message), expanded=False)
-    elif state.settings().debug_panels:
-        with st.expander("🔧 Debug", expanded=False):
-            st.json(debug, expanded=False)
 
 
 def _generation_debug_payload(message: ChatMessage) -> dict:
@@ -338,11 +342,7 @@ def _handle_input(has_documents: bool) -> None:
     if not has_documents:
         return
     if not settings.llm.is_configured:
-        st.error(
-            "No language-model provider is configured. Add `GEMINI_API_KEY` "
-            "(primary) or `OPENROUTER_API_KEY` (fallback) to your Streamlit "
-            "secrets, then reload."
-        )
+        st.error(SERVICE_NOT_CONFIGURED)
         return
 
     user_message = ChatMessage(role=Role.USER, content=prompt)
@@ -390,7 +390,7 @@ def _answer(
         )
     except Exception as exc:  # noqa: BLE001 - the UI must never crash
         logger.exception("Unhandled error while answering")
-        message = f"Something went wrong while answering ({type(exc).__name__})."
+        message = "Something went wrong while answering. Please try again."
         return ChatMessage(role=Role.ASSISTANT, content=message, error=message)
 
 

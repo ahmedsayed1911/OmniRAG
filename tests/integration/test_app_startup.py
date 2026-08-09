@@ -130,7 +130,10 @@ class TestZeroConfigurationStartup:
         )
 
         assert message.error
-        assert "GEMINI_API_KEY" in message.content
+        assert message.content == (
+            "The AI service is not configured. Please contact the app administrator."
+        )
+        assert "API_KEY" not in message.content
 
     def test_message_actions_render_and_edit_cancel_is_non_destructive(self, session_id):
         from streamlit.testing.v1 import AppTest
