@@ -210,6 +210,7 @@ class TestGroqTransport:
         assert calls[0]["json"]["model"] == DEFAULT_MODEL
         assert calls[0]["json"]["max_completion_tokens"] == 321
         assert "max_tokens" not in calls[0]["json"]
+        assert calls[0]["json"]["include_reasoning"] is False
         assert response.text == "answer"
         assert response.model == DEFAULT_MODEL
         assert response.finish_reason == "stop"
@@ -229,10 +230,115 @@ class TestGroqTransport:
 
         payload = calls[0]["json"]
         assert payload["model"] == DEFAULT_VISION_MODEL
+        assert payload["reasoning_format"] == "hidden"
         parts = payload["messages"][0]["content"]
         image = next(part for part in parts if part["type"] == "image_url")
         assert image["image_url"]["url"].startswith("data:image/png;base64,")
         assert response.text == "visual answer"
+
+    def test_qwen_separate_reasoning_field_never_enters_answer(self, groq_http):
+        calls, responses = groq_http
+        final_answer = "بناءً على الصورة المرفقة للصفحة 3 [1]، يوجد رسمان توضيحيان."
+        reasoning = (
+            "1. Analyze the Source Image:\n"
+            "2. Draft the Explanation (Internal Monologue/Drafting):\n"
+            "3. Refine the Output (Arabic):\n"
+            "4. Final Polish\n"
+            "5. Check against constraints:\n"
+            "6. Final Output Generation:"
+        )
+        responses.append(
+            FakeResponse(
+                200,
+                {
+                    "model": DEFAULT_VISION_MODEL,
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "reasoning": reasoning,
+                                "content": final_answer,
+                            },
+                            "finish_reason": "stop",
+                        }
+                    ],
+                },
+            )
+        )
+        provider = GroqLLM(
+            api_key="test-key",
+            model=DEFAULT_VISION_MODEL,
+            retry_attempts=1,
+        )
+
+        response = provider.complete(_messages())
+
+        assert calls[0]["json"]["reasoning_format"] == "hidden"
+        assert response.text == final_answer
+        assert response.diagnostics["reasoning_suppressed"] is True
+        assert response.diagnostics["reasoning_chars"] == len(reasoning)
+        assert all(marker not in response.text for marker in (
+            "Analyze the Source Image",
+            "Internal Monologue",
+            "Draft the Explanation",
+            "Check against constraints",
+            "Final Output Generation",
+        ))
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            [
+                {
+                    "type": "reasoning",
+                    "text": "Analyze the Source Image and draft internally.",
+                },
+                {
+                    "type": "text",
+                    "text": "بناءً على الصورة المرفقة للصفحة 3 [1]، يوجد رسمان.",
+                },
+            ],
+            (
+                "<think>\n1. Analyze the Source Image:\n"
+                "2. Draft the Explanation (Internal Monologue/Drafting):\n"
+                "5. Check against constraints:\n"
+                "6. Final Output Generation:\n</think>\n"
+                "بناءً على الصورة المرفقة للصفحة 3 [1]، يوجد رسمان."
+            ),
+        ],
+        ids=["separate-content-block", "documented-raw-think-envelope"],
+    )
+    def test_qwen_reasoning_shapes_keep_only_final_content(self, groq_http, content):
+        _, responses = groq_http
+        responses.append(
+            FakeResponse(
+                200,
+                {
+                    "model": DEFAULT_VISION_MODEL,
+                    "choices": [
+                        {
+                            "message": {"role": "assistant", "content": content},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                },
+            )
+        )
+        provider = GroqLLM(
+            api_key="test-key",
+            model=DEFAULT_VISION_MODEL,
+            retry_attempts=1,
+        )
+
+        response = provider.complete(_messages())
+
+        assert response.text.startswith("بناءً على الصورة المرفقة")
+        assert response.diagnostics["reasoning_suppressed"] is True
+        assert "Analyze the Source Image" not in response.text
+        assert "Internal Monologue" not in response.text
+        assert "Draft the Explanation" not in response.text
+        assert "Check against constraints" not in response.text
+        assert "Final Output Generation" not in response.text
 
     @pytest.mark.parametrize(
         "response,error_type",

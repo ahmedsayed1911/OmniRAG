@@ -8,6 +8,7 @@ base64 data URLs, which every one of those backends accepts.
 
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Optional, Sequence
 
 from omnirag.core.enums import Role
@@ -37,6 +38,12 @@ DEFAULT_BASE_URL = "https://api.openai.com/v1"
 # Model families known to accept images. Unknown models are assumed capable —
 # the alternative (silently dropping images) would break the multimodal rule.
 _TEXT_ONLY_HINTS = ("embedding", "whisper", "tts", "moderation", "instruct")
+_REASONING_PART_TYPES = frozenset({"analysis", "reasoning", "thinking"})
+_VISIBLE_TEXT_PART_TYPES = frozenset({"", "text", "output_text"})
+_LEADING_THINK_RE = re.compile(
+    r"^\s*<think(?:\s[^>]*)?>(.*?)</think>\s*",
+    flags=re.IGNORECASE | re.DOTALL,
+)
 
 
 class OpenAICompatibleLLM(BaseLLMProvider):
@@ -102,6 +109,13 @@ class OpenAICompatibleLLM(BaseLLMProvider):
                 # Ask OpenRouter to choose only routes that support the
                 # structured-output parameter instead of silently ignoring it.
                 payload["provider"] = {"require_parameters": True}
+        payload.update(
+            self._provider_payload(
+                target_model,
+                json_mode=json_mode,
+                requirements=requirements,
+            )
+        )
 
         headers = self._headers()
 
@@ -131,6 +145,16 @@ class OpenAICompatibleLLM(BaseLLMProvider):
         response.diagnostics.setdefault("provider_raw_chars", len(response.text))
         response.diagnostics.setdefault("parsed_chars", len(response.text))
         return response
+
+    def _provider_payload(
+        self,
+        model: str,
+        *,
+        json_mode: bool,
+        requirements: Optional[LLMRequestRequirements],
+    ) -> Dict[str, Any]:
+        """Provider-specific request options without leaking into callers."""
+        return {}
 
     def _headers(self) -> Dict[str, str]:
         return {
@@ -178,12 +202,9 @@ class OpenAICompatibleLLM(BaseLLMProvider):
         try:
             choice = (body.get("choices") or [{}])[0]
             message = choice.get("message") or {}
-            content = message.get("content")
-            if isinstance(content, list):  # some gateways return parts
-                content = "".join(
-                    part.get("text", "") for part in content if isinstance(part, dict)
-                )
-            text = (content or "").strip()
+            raw_text, structured_reasoning_chars = _visible_message_text(message)
+            text, tagged_reasoning_chars = _without_leading_thinking(raw_text)
+            reasoning_chars = structured_reasoning_chars + tagged_reasoning_chars
             finish_reason = choice.get("finish_reason") or ""
         except Exception as exc:
             raise LLMError(
@@ -211,7 +232,71 @@ class OpenAICompatibleLLM(BaseLLMProvider):
             finish_reason=finish_reason,
             usage=body.get("usage") or {},
             provider=self.name,
+            diagnostics={
+                "provider_raw_chars": len(raw_text),
+                "parsed_chars": len(text),
+                "reasoning_chars": reasoning_chars,
+                "reasoning_suppressed": bool(reasoning_chars),
+            },
         )
+
+
+def _visible_message_text(message: Dict[str, Any]) -> tuple[str, int]:
+    """Return assistant answer text while retaining only safe reasoning metrics.
+
+    OpenAI-compatible gateways may expose reasoning as ``message.reasoning``
+    or as explicitly typed content blocks. Neither belongs in answer content.
+    Untyped and ordinary text blocks remain compatible with older gateways.
+    """
+    reasoning_chars = _nested_text_length(message.get("reasoning"))
+    content = message.get("content")
+    if isinstance(content, str):
+        return content, reasoning_chars
+    if not isinstance(content, list):
+        return "", reasoning_chars
+
+    visible: List[str] = []
+    for part in content:
+        if not isinstance(part, dict):
+            continue
+        part_type = str(part.get("type") or "").strip().lower()
+        part_text = part.get("text")
+        if part_type in _REASONING_PART_TYPES:
+            reasoning_chars += _nested_text_length(part_text)
+        elif part_type in _VISIBLE_TEXT_PART_TYPES and isinstance(part_text, str):
+            visible.append(part_text)
+    return "".join(visible), reasoning_chars
+
+
+def _without_leading_thinking(text: str) -> tuple[str, int]:
+    """Remove only the provider's documented leading ``<think>`` envelope."""
+    remaining = text or ""
+    suppressed = 0
+    while True:
+        match = _LEADING_THINK_RE.match(remaining)
+        if not match:
+            break
+        suppressed += len(match.group(1))
+        remaining = remaining[match.end():]
+    if re.match(r"^\s*<think(?:\s[^>]*)?>", remaining, flags=re.IGNORECASE):
+        # An unterminated thinking-only response has no trustworthy answer
+        # boundary. Treat it as empty so the normal provider failure path runs.
+        return "", suppressed + len(remaining)
+    return remaining.strip(), suppressed
+
+
+def _nested_text_length(value: Any) -> int:
+    if isinstance(value, str):
+        return len(value)
+    if isinstance(value, list):
+        return sum(_nested_text_length(item) for item in value)
+    if isinstance(value, dict):
+        return sum(
+            _nested_text_length(value.get(key))
+            for key in ("text", "content", "reasoning")
+            if key in value
+        )
+    return 0
 
 
 def raise_gateway_error(error: Dict[str, Any], *, provider: str) -> None:

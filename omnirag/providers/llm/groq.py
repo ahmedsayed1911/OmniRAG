@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Optional, Sequence
+from typing import Any, Dict, Optional, Sequence
 
 from omnirag.core.exceptions import ProviderTokenBudgetExceededError
 from omnirag.providers.llm.base import LLMMessage, LLMRequestRequirements, LLMResponse
@@ -72,6 +72,21 @@ class GroqLLM(OpenAICompatibleLLM):
         if self._supports_images_override is not None:
             return self._supports_images_override
         return model_supports_images(model or self.vision_model)
+
+    def _provider_payload(
+        self,
+        model: str,
+        *,
+        json_mode: bool,
+        requirements: Optional[LLMRequestRequirements],
+    ) -> Dict[str, Any]:
+        """Keep Groq reasoning private at the API response boundary."""
+        normalized = (model or "").strip().lower()
+        if normalized.startswith("qwen/"):
+            return {"reasoning_format": "hidden"}
+        if normalized.startswith("openai/gpt-oss-"):
+            return {"include_reasoning": False}
+        return {}
 
     def complete(
         self,

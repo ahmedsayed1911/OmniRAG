@@ -46,6 +46,11 @@ from omnirag.utils.text import dedupe_preserve_order, estimate_tokens, truncate
 logger = get_logger(__name__)
 
 INSUFFICIENT_MARKER = "INSUFFICIENT_EVIDENCE"
+FINAL_ANSWER_ONLY_INSTRUCTION = (
+    "Return only the final answer. Do not output analysis, reasoning, planning, "
+    "drafting notes, internal monologue, self-evaluation, preparation steps, or "
+    "generation instructions."
+)
 
 SYSTEM_PROMPT = f"""You are OmniRAG, a document-analysis assistant. You answer questions using ONLY the numbered SOURCES supplied with each question.
 
@@ -80,7 +85,10 @@ LANGUAGE
 STYLE
 - Be direct and specific. Lead with the answer, then the supporting detail.
 - Use short paragraphs or bullets. Use a Markdown table when comparing several items.
-- Do not describe your own process or mention "sources provided to me"."""
+- Do not describe your own process or mention "sources provided to me".
+
+OUTPUT PRIVACY
+- {FINAL_ANSWER_ONLY_INSTRUCTION}"""
 
 MAX_CONTEXT_CHARS_PER_CHUNK = 3200
 OUTPUT_LIMIT_REASONS = frozenset({"MAX_TOKENS", "MAX_OUTPUT_TOKENS", "LENGTH"})
@@ -88,7 +96,8 @@ CONTINUATION_PROMPT = """Continue exactly where your previous response stopped.
 Do not restart the answer and do not repeat any completed section or sentence.
 Use only the same numbered sources already supplied; do not add outside facts.
 Preserve the existing citation numbering and cite every continued factual item.
-Finish the remaining answer naturally and compactly."""
+Finish the remaining answer naturally and compactly.
+Return only the continued final-answer text; never output reasoning, planning, or drafting notes."""
 
 
 @dataclass
@@ -628,6 +637,8 @@ COMPREHENSIVE MODE
             "---",
             "",
             f"QUESTION: {request.question}",
+            "",
+            FINAL_ANSWER_ONLY_INSTRUCTION,
         ]
         if images:
             numbers = ", ".join(f"[{index}]" for index, _ in images)
@@ -746,5 +757,6 @@ __all__ = [
     "GenerationRequest",
     "INSUFFICIENT_MARKER",
     "SYSTEM_PROMPT",
+    "FINAL_ANSWER_ONLY_INSTRUCTION",
     "build_generator",
 ]

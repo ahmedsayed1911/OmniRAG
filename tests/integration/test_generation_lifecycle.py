@@ -10,7 +10,10 @@ from streamlit.testing.v1 import AppTest
 from omnirag.core.enums import FileType, Role
 from omnirag.core.models import ChatMessage, Chunk, RetrievalResult, SearchResult
 from omnirag.providers.llm.base import BaseLLMProvider, LLMResponse
+from omnirag.providers.llm.groq import DEFAULT_VISION_MODEL, GroqLLM
+from omnirag.rag.generation import FINAL_ANSWER_ONLY_INSTRUCTION
 from omnirag.services.chat_service import ChatRequest, ChatService
+from omnirag.services.chat_history import apply_regeneration, plan_regeneration
 from omnirag.services.ingestion_service import IngestionService, UploadedFile
 from omnirag.ui.message_actions import copy_component_html
 from omnirag.ui.state import MESSAGES_KEY, SESSION_KEY
@@ -142,3 +145,105 @@ def test_long_arabic_answer_is_exact_at_every_boundary_and_after_rerun(
     assert not app.exception
     assert app.session_state[MESSAGES_KEY][1].content == original
     assert any(markdown.value == original for markdown in app.markdown)
+
+
+def test_page_three_groq_reasoning_is_hidden_from_chat_copy_and_regenerate(
+    engine, session_id, monkeypatch
+):
+    query = "اشرحلي الرسومات الموجودة ف بيدج 3"
+    final_answer = (
+        "بناءً على الصورة المرفقة للصفحة 3 [1]، يوجد رسمان يوضحان "
+        "تنظيم فرق تطوير البرمجيات وتدفق نظام الرواتب."
+    )
+    internal = (
+        "1. Analyze the Source Image:\n"
+        "2. Draft the Explanation (Internal Monologue/Drafting):\n"
+        "3. Refine the Output (Arabic):\n"
+        "4. Final Polish\n"
+        "5. Check against constraints:\n"
+        "6. Final Output Generation:"
+    )
+    bodies = [
+        {
+            "model": DEFAULT_VISION_MODEL,
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "reasoning": internal,
+                    "content": final_answer,
+                },
+                "finish_reason": "stop",
+            }],
+        },
+        {
+            "model": DEFAULT_VISION_MODEL,
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": f"<think>{internal}</think>\n{final_answer}",
+                },
+                "finish_reason": "stop",
+            }],
+        },
+    ]
+    payloads = []
+
+    def fake_post_json(url, payload, **kwargs):
+        payloads.append(payload)
+        return bodies.pop(0)
+
+    monkeypatch.setattr(
+        "omnirag.providers.llm.openai_compat.post_json", fake_post_json
+    )
+    engine._llm = GroqLLM(
+        api_key="not-sent",
+        model=DEFAULT_VISION_MODEL,
+        retry_attempts=1,
+    )
+    user = ChatMessage(role=Role.USER, content=query)
+    service = FixedRetrievalChatService(engine)
+
+    first = service.answer(
+        ChatRequest(
+            question=query,
+            session_id=session_id,
+            user_message_id=user.message_id,
+        )
+    )
+    history = [user, first]
+    clipboard = copy_component_html(first.content, first.message_id)
+    regeneration = plan_regeneration(history, first.message_id)
+    regenerated = service.answer(
+        ChatRequest(
+            question=regeneration.prompt,
+            session_id=session_id,
+            history=regeneration.history,
+            user_message_id=regeneration.user_message_id,
+        )
+    )
+    updated = apply_regeneration(history, regeneration, regenerated)
+
+    forbidden = (
+        "Analyze the Source Image",
+        "Internal Monologue",
+        "Draft the Explanation",
+        "Check against constraints",
+        "Final Output Generation",
+    )
+    assert first.content.startswith("بناءً على الصورة المرفقة")
+    assert regenerated.content.startswith("بناءً على الصورة المرفقة")
+    assert all(marker not in first.content for marker in forbidden)
+    assert all(marker not in regenerated.content for marker in forbidden)
+    assert all(marker not in clipboard for marker in forbidden)
+    assert first.citations and regenerated.citations
+    assert updated[-1].content == regenerated.content
+    assert first.debug["reasoning_suppressed"] is True
+    assert regenerated.debug["reasoning_suppressed"] is True
+    assert all(payload["reasoning_format"] == "hidden" for payload in payloads)
+    assert all(
+        FINAL_ANSWER_ONLY_INSTRUCTION in payload["messages"][0]["content"]
+        and FINAL_ANSWER_ONLY_INSTRUCTION in payload["messages"][-1]["content"]
+        for payload in payloads
+    )
+    assert all("Page 3" in payload["messages"][-1]["content"] for payload in payloads)
+    assert all("Page 2" not in payload["messages"][-1]["content"] for payload in payloads)
