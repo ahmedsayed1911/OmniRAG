@@ -415,6 +415,12 @@ class RetrievalResult(OmniModel):
     reranked: bool = False
     timings_ms: Dict[str, float] = Field(default_factory=dict)
     notes: List[str] = Field(default_factory=list)
+    query_scope: str = "FOCUSED"
+    candidate_count: int = 0
+    unique_pages: int = 0
+    total_pages: int = 0
+    structured_matches: int = 0
+    completeness_pass: bool = False
 
     @property
     def chunks(self) -> List[Chunk]:
@@ -460,6 +466,7 @@ class ChatMessage(OmniModel):
     used_documents: List[str] = Field(default_factory=list)
     error: Optional[str] = None
     debug: Dict[str, Any] = Field(default_factory=dict)
+    reply_to_message_id: Optional[str] = None
 
 
 class AnswerResult(OmniModel):

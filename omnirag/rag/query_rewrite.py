@@ -24,7 +24,7 @@ import re
 from dataclasses import dataclass, field
 from typing import List, Optional, Sequence
 
-from omnirag.core.enums import Language, Role
+from omnirag.core.enums import Language, QueryScope, Role
 from omnirag.core.exceptions import ProviderError
 from omnirag.core.models import ChatMessage
 from omnirag.providers.llm.base import BaseLLMProvider, LLMMessage
@@ -75,6 +75,23 @@ _PRONOUN_ONLY = re.compile(
     re.I,
 )
 
+_EXHAUSTIVE_HINTS = re.compile(
+    r"\b(list\s+all|all|every|each|find\s+every|complete\s+list)\b|"
+    r"(كل\s+الحالات|جميع\s+الحالات|كل\s+الأخطاء|كل\s+المشاكل|اذكر\s+كل|"
+    r"جميع|بالكامل)",
+    re.I,
+)
+_GLOBAL_HINTS = re.compile(
+    r"\b(summari[sz]e\s+(?:this|the|entire|whole|full)?\s*document|"
+    r"entire\s+document|whole\s+(?:document|file)|across\s+the\s+document|"
+    r"full\s+(?:document|file))\b|"
+    r"(لخص\s+(?:هذا\s+)?الملف|لخصلي\s+الملف|الملف\s+كله|كامل\s+الملف)",
+    re.I,
+)
+_FAILED_HINTS = re.compile(r"\b(?:fail|failed|failure)s?\b|(?:فشل|فاشل|فاشلة|الفشل)", re.I)
+_BUG_HINTS = re.compile(r"\bbugs?\b|bug\s+reports?|(?:الأخطاء|المشاكل|عيوب)", re.I)
+_SEVERITY_HINTS = re.compile(r"\bseverity|high[- ]severity\b|(?:الخطورة|عالية\s+الخطورة)", re.I)
+
 SYSTEM_PROMPT = """You rewrite a user's question into alternative search queries for a document search engine.
 
 Rules:
@@ -100,6 +117,7 @@ class QueryPlan:
     is_comparison: bool = False
     is_followup: bool = False
     notes: List[str] = field(default_factory=list)
+    scope: QueryScope = QueryScope.FOCUSED
 
     @property
     def search_queries(self) -> List[str]:
@@ -134,6 +152,10 @@ def parse_query(query: str, history: Optional[Sequence[ChatMessage]] = None) -> 
     plan.is_comparison = bool(
         _COMPARISON.search(normalized) or _COMPARISON_AR.search(normalized)
     )
+    plan.scope = classify_query_scope(normalized)
+    if plan.scope != QueryScope.FOCUSED:
+        plan.expansions.extend(decompose_query(plan))
+        plan.notes.append(f"Retrieval scope: {plan.scope.value}.")
 
     resolved = _resolve_followup(normalized, history)
     if resolved != normalized:
@@ -142,6 +164,45 @@ def parse_query(query: str, history: Optional[Sequence[ChatMessage]] = None) -> 
         plan.notes.append("Resolved a follow-up question using the previous turn.")
 
     return plan
+
+
+def classify_query_scope(query: str) -> QueryScope:
+    """Classify breadth deterministically; ordinary questions stay fast."""
+    normalized = normalize_query(query)
+    exhaustive = bool(_EXHAUSTIVE_HINTS.search(normalized))
+    global_request = bool(_GLOBAL_HINTS.search(normalized))
+    # A request combining a document overview with an enumeration has two
+    # separately retrievable intents and must retain both.
+    if exhaustive and global_request:
+        return QueryScope.MULTI_PART
+    if exhaustive:
+        return QueryScope.EXHAUSTIVE
+    if global_request:
+        return QueryScope.GLOBAL
+    return QueryScope.FOCUSED
+
+
+def decompose_query(plan: QueryPlan) -> List[str]:
+    """Produce bounded, intent-preserving retrieval variants."""
+    query = plan.normalized
+    variants: List[str] = []
+    if plan.scope in (QueryScope.GLOBAL, QueryScope.MULTI_PART):
+        variants.extend(["document overview main sections", "document summary key findings"])
+    if _FAILED_HINTS.search(query):
+        variants.extend(
+            [
+                "failed test cases status fail failed",
+                "test case actual result expected result failure reason",
+            ]
+        )
+    if _BUG_HINTS.search(query) or plan.scope in (QueryScope.EXHAUSTIVE, QueryScope.MULTI_PART):
+        variants.append("bug report bug ID severity actual result")
+    if _SEVERITY_HINTS.search(query):
+        variants.append("high severity bug reports")
+    if plan.language in (Language.ARABIC, Language.MIXED):
+        # Deterministic English bridge for the common structured QA vocabulary.
+        variants.append("test cases status failed actual result bug report severity")
+    return dedupe_preserve_order(variants)[:6]
 
 
 def _extract_pages(query: str) -> List[int]:
@@ -254,6 +315,8 @@ def normalize_for_index(text: str) -> str:
 
 __all__ = [
     "QueryPlan",
+    "classify_query_scope",
+    "decompose_query",
     "expand_with_llm",
     "normalize_query",
     "parse_query",

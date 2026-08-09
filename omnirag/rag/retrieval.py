@@ -17,11 +17,12 @@ here so the UI and the future FastAPI layer share exactly one code path.
 from __future__ import annotations
 
 import time
+import re
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence
 
 from omnirag.config.settings import AppSettings, get_settings
-from omnirag.core.enums import BlockType
+from omnirag.core.enums import BlockType, QueryScope
 from omnirag.core.exceptions import RetrievalError, VectorStoreError
 from omnirag.core.models import Chunk, RetrievalResult, SearchResult
 from omnirag.providers.embeddings.base import BaseEmbeddingProvider
@@ -90,6 +91,25 @@ class Retriever:
             plan = expand_with_llm(plan, self.llm, max_expansions=cfg.max_expansions)
         timings["plan_ms"] = (time.perf_counter() - started) * 1000
 
+        broad = plan.scope != QueryScope.FOCUSED
+        corpus: List[Chunk] = []
+        if broad:
+            try:
+                corpus = self.vector_store.list_chunks(
+                    session_id, document_ids=request.document_ids
+                )
+            except Exception as exc:
+                logger.warning("Broad corpus scan unavailable: %s", exc)
+            if plan.page_filter:
+                allowed = set(plan.page_filter)
+                corpus = [chunk for chunk in corpus if chunk.page_number in allowed]
+            if plan.scope in (QueryScope.EXHAUSTIVE, QueryScope.MULTI_PART):
+                final_k = max(final_k, cfg.exhaustive_final_k)
+            else:
+                final_k = max(final_k, min(16, cfg.exhaustive_final_k))
+            if corpus and len(corpus) <= cfg.exhaustive_scan_max_chunks:
+                top_k = max(top_k, len(corpus))
+
         result = RetrievalResult(
             query=request.query,
             normalized_query=plan.normalized,
@@ -97,6 +117,8 @@ class Retriever:
             language=plan.language,
             strategy=cfg.strategy,
             notes=list(plan.notes),
+            query_scope=plan.scope.value,
+            total_pages=len({(c.document_id, c.page_number) for c in corpus}),
         )
 
         filters = self._build_filters(plan, request.document_ids)
@@ -127,6 +149,19 @@ class Retriever:
             chunk_pool.update(keyword_chunks)
             timings["keyword_ms"] = (time.perf_counter() - started) * 1000
 
+        structured = _structured_matches(corpus, plan)
+        if plan.scope in (QueryScope.EXHAUSTIVE, QueryScope.MULTI_PART):
+            final_k = max(final_k, len(structured))
+        structured_order = [chunk.chunk_id for chunk in structured]
+        chunk_pool.update({chunk.chunk_id: chunk for chunk in structured})
+
+        coverage_order: List[str] = []
+        if corpus and len(corpus) <= cfg.exhaustive_scan_max_chunks:
+            # Small selected collections can be inspected completely. This is
+            # a low-weight recall ranking; relevance rankings still dominate.
+            coverage_order = [chunk.chunk_id for chunk in corpus]
+            chunk_pool.update({chunk.chunk_id: chunk for chunk in corpus})
+
         if not chunk_pool:
             result.timings_ms = timings
             if plan.page_filter:
@@ -141,18 +176,33 @@ class Retriever:
         vector_scores = {c.chunk_id: score for c, score in vector_hits}
 
         if cfg.strategy == "vector" or not keyword_order:
-            fused = [(cid, vector_scores.get(cid, 0.0)) for cid in vector_order]
+            rankings = [vector_order]
+            weights = [VECTOR_WEIGHT]
             strategy = "vector"
         elif cfg.strategy == "keyword":
-            fused = [(cid, keyword_hits.get(cid, 0.0)) for cid in keyword_order]
+            rankings = [keyword_order]
+            weights = [KEYWORD_WEIGHT]
             strategy = "keyword"
         else:
-            fused = reciprocal_rank_fusion(
-                [vector_order, keyword_order],
-                k=cfg.rrf_k,
-                weights=[VECTOR_WEIGHT, KEYWORD_WEIGHT],
-            )
+            rankings = [vector_order, keyword_order]
+            weights = [VECTOR_WEIGHT, KEYWORD_WEIGHT]
             strategy = "hybrid"
+        if structured_order:
+            rankings.append(structured_order)
+            weights.append(1.8)
+        if coverage_order:
+            rankings.append(coverage_order)
+            weights.append(0.2)
+        if len(rankings) > 1:
+            fused = reciprocal_rank_fusion(
+                rankings,
+                k=cfg.rrf_k,
+                weights=weights,
+            )
+        else:
+            only = rankings[0]
+            score_map = vector_scores if strategy == "vector" else keyword_hits
+            fused = [(cid, score_map.get(cid, 0.0)) for cid in only]
         result.strategy = strategy
 
         candidates = [
@@ -176,15 +226,46 @@ class Retriever:
 
         # -- 6. selection ----------------------------------------------- #
         selected = self._select(candidates, plan, final_k, cfg.max_context_chars)
+        completeness_pass = False
+        if plan.scope in (QueryScope.EXHAUSTIVE, QueryScope.MULTI_PART) and structured:
+            missing = [
+                chunk for chunk in structured
+                if chunk.chunk_id not in {item.chunk.chunk_id for item in selected}
+            ]
+            if missing:
+                completeness_pass = True
+                by_id = {item.chunk.chunk_id: item for item in candidates}
+                selected = self._recover_structured(
+                    selected,
+                    [by_id[c.chunk_id] for c in structured if c.chunk_id in by_id],
+                    final_k,
+                    cfg.max_context_chars,
+                )
         for rank, item in enumerate(selected):
             item.rank = rank
         result.results = selected
+        result.candidate_count = len(candidates)
+        result.unique_pages = len(
+            {(item.chunk.document_id, item.chunk.page_number) for item in selected}
+        )
+        result.structured_matches = sum(
+            chunk.block_type == BlockType.TABLE for chunk in structured
+        )
+        result.completeness_pass = completeness_pass
         result.timings_ms = timings
 
         logger.info(
-            "Retrieved %d/%d chunks (strategy=%s, reranked=%s)",
-            len(selected),
+            "query_scope=%s subqueries=%d candidate_count=%d unique_pages=%d "
+            "structured_matches=%d final_context_chunks=%d completeness_pass=%s "
+            "retrieval_ms=%.0f strategy=%s reranked=%s",
+            plan.scope.value,
+            len(plan.search_queries),
             len(candidates),
+            result.unique_pages,
+            result.structured_matches,
+            len(selected),
+            completeness_pass,
+            sum(timings.values()),
             strategy,
             result.reranked,
         )
@@ -317,10 +398,24 @@ class Retriever:
             if distinct > 1:
                 document_cap = max(2, final_k // distinct + 1)
 
-        prioritized = list(candidates)
+        prioritized = _deduplicate_candidates(candidates)
         if plan.wants_visual:
             # Explicit visual question: float visual blocks to the front.
             prioritized.sort(key=lambda r: 0 if r.chunk.block_type.is_visual else 1)
+
+        # Broad queries first take the best item from each page, then fill the
+        # remaining slots by score. This prevents adjacent duplicate pages from
+        # monopolising a supposedly document-wide answer.
+        if plan.scope != QueryScope.FOCUSED:
+            first_by_page: Dict[tuple[str, int], SearchResult] = {}
+            for item in prioritized:
+                key = (item.chunk.document_id, item.chunk.page_number)
+                first_by_page.setdefault(key, item)
+            representatives = list(first_by_page.values())
+            representative_ids = {item.chunk.chunk_id for item in representatives}
+            prioritized = representatives + [
+                item for item in prioritized if item.chunk.chunk_id not in representative_ids
+            ]
 
         for item in prioritized:
             if len(selected) >= final_k:
@@ -340,6 +435,115 @@ class Retriever:
             used_chars += len(chunk.text)
 
         return selected
+
+    def _recover_structured(
+        self,
+        selected: List[SearchResult],
+        missing: Sequence[SearchResult],
+        final_k: int,
+        max_chars: int,
+    ) -> List[SearchResult]:
+        """One bounded recovery pass for structured exhaustive matches."""
+        required_ids = {item.chunk.chunk_id for item in missing}
+        recovered = list(missing[:final_k])
+        used_chars = sum(len(item.chunk.text) for item in recovered)
+        for item in selected:
+            if item.chunk.chunk_id in required_ids or len(recovered) >= final_k:
+                continue
+            if used_chars + len(item.chunk.text) > max_chars:
+                continue
+            recovered.append(item)
+            used_chars += len(item.chunk.text)
+        return recovered
+
+
+def _structured_matches(chunks: Sequence[Chunk], plan: QueryPlan) -> List[Chunk]:
+    """Return exact structured rows/blocks that satisfy explicit query terms."""
+    failed = _FAILED_QUERY.search(plan.normalized)
+    bugs = _BUG_QUERY.search(plan.normalized)
+    severity = _HIGH_SEVERITY_QUERY.search(plan.normalized)
+    matches: List[Chunk] = []
+    for chunk in chunks:
+        text = chunk.text
+        if severity:
+            if _HIGH_SEVERITY_ROW.search(text) and _BUG_ROW.search(text):
+                matches.append(chunk)
+        elif failed:
+            if chunk.block_type == BlockType.TABLE and _FAILED_ROW.search(text):
+                matches.append(chunk)
+            elif _BUG_ROW.search(text):
+                # Bug reports are retained beside failed rows so the generator
+                # can make only evidence-supported test-case links.
+                matches.append(chunk)
+        elif bugs and _BUG_ROW.search(text):
+            matches.append(chunk)
+    return _dedupe_chunks(matches)
+
+
+_FAILED_QUERY = re.compile(r"\b(?:fail|failed|failure)s?\b|(?:فشل|فاشل|فاشلة|الفشل)", re.I)
+_BUG_QUERY = re.compile(r"\bbugs?\b|(?:الأخطاء|المشاكل)", re.I)
+_HIGH_SEVERITY_QUERY = re.compile(r"\bhigh[- ]severity\b|(?:عالية\s+الخطورة)", re.I)
+_FAILED_ROW = re.compile(
+    r"(?:\bstatus\b|\|)\s*[:|=-]?\s*(?:fail|failed)\b|\|\s*(?:fail|failed)\s*\|",
+    re.I,
+)
+_BUG_ROW = re.compile(r"\bBUG[-_ ]?\d+\b|\bbug\s+(?:id|report)\b", re.I)
+_HIGH_SEVERITY_ROW = re.compile(
+    r"\|\s*severity\s*\|\s*high\s*\||\bseverity\s*[:=-]\s*high\b",
+    re.I,
+)
+
+
+def _evidence_key(chunk: Chunk) -> str:
+    identifiers = sorted(set(_IDENTIFIER.findall(chunk.text.upper())))
+    if identifiers:
+        return (
+            f"{chunk.document_id}:{chunk.page_number}:"
+            f"{','.join(identifiers)}"
+        )
+    text = re.sub(r"\W+", " ", chunk.text.lower()).strip()
+    return f"{chunk.document_id}:{chunk.page_number}:{text[:500]}"
+
+
+_IDENTIFIER = re.compile(r"\b(?:TC|BUG)[-_ ]?\d+\b", re.I)
+
+
+def _richness(chunk: Chunk) -> tuple[int, int, int]:
+    return (
+        int(chunk.block_type == BlockType.TABLE),
+        int(chunk.visual is not None),
+        len(chunk.text),
+    )
+
+
+def _dedupe_chunks(chunks: Sequence[Chunk]) -> List[Chunk]:
+    positions: Dict[str, int] = {}
+    out: List[Chunk] = []
+    for chunk in chunks:
+        key = _evidence_key(chunk)
+        if key in positions:
+            index = positions[key]
+            if _richness(chunk) > _richness(out[index]):
+                out[index] = chunk
+            continue
+        positions[key] = len(out)
+        out.append(chunk)
+    return out
+
+
+def _deduplicate_candidates(candidates: Sequence[SearchResult]) -> List[SearchResult]:
+    positions: Dict[str, int] = {}
+    out: List[SearchResult] = []
+    for item in candidates:
+        key = _evidence_key(item.chunk)
+        if key in positions:
+            index = positions[key]
+            if _richness(item.chunk) > _richness(out[index].chunk):
+                out[index] = item
+            continue
+        positions[key] = len(out)
+        out.append(item)
+    return out
 
 
 def build_retriever(settings: Optional[AppSettings] = None) -> Retriever:

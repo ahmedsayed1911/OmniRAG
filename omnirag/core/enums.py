@@ -135,3 +135,12 @@ class RetrievalStrategy(StrEnum):
     VECTOR = "vector"
     KEYWORD = "keyword"
     HYBRID = "hybrid"
+
+
+class QueryScope(StrEnum):
+    """How broadly retrieval must cover the selected documents."""
+
+    FOCUSED = "FOCUSED"
+    GLOBAL = "GLOBAL"
+    EXHAUSTIVE = "EXHAUSTIVE"
+    MULTI_PART = "MULTI_PART"

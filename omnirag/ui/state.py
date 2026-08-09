@@ -30,6 +30,8 @@ MESSAGES_KEY = "omnirag_messages"
 SELECTED_KEY = "omnirag_selected_documents"
 PROCESSED_KEY = "omnirag_processed_uploads"
 PENDING_KEY = "omnirag_pending_prompt"
+EDITING_KEY = "omnirag_editing_message"
+ACTION_ERROR_KEY = "omnirag_message_action_error"
 
 
 @st.cache_resource(show_spinner=False)
@@ -68,6 +70,8 @@ def init_state() -> str:
     st.session_state.setdefault(SELECTED_KEY, None)  # None == all documents
     st.session_state.setdefault(PROCESSED_KEY, set())
     st.session_state.setdefault(PENDING_KEY, None)
+    st.session_state.setdefault(EDITING_KEY, None)
+    st.session_state.setdefault(ACTION_ERROR_KEY, None)
     return st.session_state[SESSION_KEY]
 
 
@@ -86,6 +90,28 @@ def add_message(message: ChatMessage) -> None:
 
 def clear_messages() -> None:
     st.session_state[MESSAGES_KEY] = []
+
+
+def replace_messages(messages: List[ChatMessage]) -> None:
+    st.session_state[MESSAGES_KEY] = list(messages)
+
+
+def editing_message_id() -> Optional[str]:
+    return st.session_state.get(EDITING_KEY)
+
+
+def set_editing_message(message_id: Optional[str]) -> None:
+    st.session_state[EDITING_KEY] = message_id
+
+
+def set_action_error(message: Optional[str]) -> None:
+    st.session_state[ACTION_ERROR_KEY] = message
+
+
+def take_action_error() -> Optional[str]:
+    message = st.session_state.get(ACTION_ERROR_KEY)
+    st.session_state[ACTION_ERROR_KEY] = None
+    return message
 
 
 # -- documents -------------------------------------------------------------- #
@@ -169,10 +195,15 @@ __all__ = [
     "messages",
     "new_chat",
     "ready_documents",
+    "replace_messages",
     "reset_session",
     "selected_document_ids",
     "session_id",
     "set_pending_prompt",
+    "editing_message_id",
+    "set_editing_message",
+    "set_action_error",
+    "take_action_error",
     "set_selected_documents",
     "settings",
     "take_pending_prompt",

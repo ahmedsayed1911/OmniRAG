@@ -38,6 +38,7 @@ class ChatRequest:
     session_id: str
     document_ids: Optional[Sequence[str]] = None
     history: Sequence[ChatMessage] = field(default_factory=list)
+    user_message_id: Optional[str] = None
 
 
 class ChatService:
@@ -79,6 +80,7 @@ class ChatService:
             )
 
         try:
+            generation_started = time.perf_counter()
             generator = self._generator()
             plan = parse_query(question, request.history)
             result = generator.generate(
@@ -91,6 +93,7 @@ class ChatService:
                     answer_language=plan.answer_language,
                 )
             )
+            generation_ms = (time.perf_counter() - generation_started) * 1000
         except MissingCredentialError as exc:
             return _error_message(exc.user_message)
         except ProviderCapabilityError as exc:
@@ -127,7 +130,15 @@ class ChatService:
                 "warnings": result.warnings,
                 "usage": result.usage,
                 "provider_attempts": self._last_attempts(),
+                "query_scope": retrieval.query_scope,
+                "pages_covered": retrieval.unique_pages,
+                "total_pages": retrieval.total_pages,
+                "candidate_count": retrieval.candidate_count,
+                "structured_matches": retrieval.structured_matches,
+                "completeness_pass": retrieval.completeness_pass,
+                "generation_ms": round(generation_ms, 1),
             },
+            reply_to_message_id=request.user_message_id,
         )
         return message
 

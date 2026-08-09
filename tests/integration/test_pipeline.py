@@ -16,6 +16,7 @@ import pytest
 
 from omnirag.core.enums import BlockType, IngestionStatus, Role
 from omnirag.core.exceptions import ProviderUnavailableError
+from omnirag.core.models import ChatMessage
 from omnirag.providers.embeddings.base import BaseEmbeddingProvider
 from omnirag.providers.embeddings.resilient import ResilientEmbeddings
 from omnirag.providers.llm.base import BaseLLMProvider, LLMResponse
@@ -23,6 +24,7 @@ from omnirag.providers.llm.context import current_llm_operation
 from omnirag.providers.llm.router import FallbackLLMProvider
 from omnirag.rag.generation import AnswerGenerator
 from omnirag.services.chat_service import ChatRequest, ChatService
+from omnirag.services.chat_history import apply_regeneration, plan_regeneration
 from omnirag.services.ingestion_service import IngestionService, UploadedFile
 from omnirag.storage.sessions import new_session_id
 
@@ -84,6 +86,64 @@ class TestFullPipeline:
         assert cited.filename == "report.pdf"
         assert cited.page_number in (1, 2)
         assert cited.page_label.startswith("Page")
+
+    def test_regeneration_reruns_retrieval_without_reingestion(
+        self,
+        service,
+        wired,
+        session_id,
+        sample_markdown,
+        recording_llm,
+        monkeypatch,
+    ):
+        ingested = service.ingest(
+            session_id, UploadedFile(name="report.md", data=sample_markdown)
+        )
+        indexed_before = wired.vector_store.count(session_id)
+        documents_before = [
+            item.model_dump() for item in wired.registry.list(session_id)
+        ]
+        user = ChatMessage(role=Role.USER, content="What was total revenue?")
+        recording_llm.responses = ["Revenue was 8,400,000 USD [1]."]
+        first = ChatService(wired).answer(
+            ChatRequest(
+                question=user.content,
+                session_id=session_id,
+                user_message_id=user.message_id,
+            )
+        )
+        history = [user, first]
+
+        searches = 0
+        original_search = wired.vector_store.search
+
+        def counted_search(*args, **kwargs):
+            nonlocal searches
+            searches += 1
+            return original_search(*args, **kwargs)
+
+        monkeypatch.setattr(wired.vector_store, "search", counted_search)
+        recording_llm.model = "mock-regenerated"
+        recording_llm.responses = ["Regenerated revenue answer [1]."]
+        plan = plan_regeneration(history, first.message_id)
+        regenerated = ChatService(wired).answer(
+            ChatRequest(
+                question=plan.prompt,
+                session_id=session_id,
+                history=plan.history,
+                user_message_id=plan.user_message_id,
+            )
+        )
+        updated = apply_regeneration(history, plan, regenerated)
+
+        assert ingested.status == IngestionStatus.READY
+        assert searches > 0, "regeneration must execute retrieval again"
+        assert len(updated) == 2 and updated[1].content.startswith("Regenerated")
+        assert updated[1].retrieval is not first.retrieval
+        assert updated[1].citations is not first.citations
+        assert updated[1].debug["model"] == "mock-regenerated"
+        assert wired.vector_store.count(session_id) == indexed_before
+        assert [item.model_dump() for item in wired.registry.list(session_id)] == documents_before
 
     def test_document_ingestion_completes_with_runtime_hash_fallback(
         self, engine, ingestion_service, session_id, sample_pdf

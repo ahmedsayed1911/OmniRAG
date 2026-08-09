@@ -252,6 +252,8 @@ class RetrievalSettings:
     query_rewrite: bool = True
     max_expansions: int = 3
     max_context_chars: int = 22000
+    exhaustive_scan_max_chunks: int = 120
+    exhaustive_final_k: int = 24
 
 
 @dataclass(frozen=True)
@@ -461,6 +463,8 @@ def build_settings() -> AppSettings:
         query_rewrite=_get_bool("QUERY_REWRITE", True),
         max_expansions=_get_int("MAX_QUERY_EXPANSIONS", 3),
         max_context_chars=_get_int("MAX_CONTEXT_CHARS", 22000),
+        exhaustive_scan_max_chunks=_get_int("EXHAUSTIVE_SCAN_MAX_CHUNKS", 120),
+        exhaustive_final_k=_get_int("EXHAUSTIVE_FINAL_K", 24),
     )
 
     upload = UploadSettings(

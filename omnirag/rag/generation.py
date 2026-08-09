@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from omnirag.config.settings import AppSettings, get_settings
-from omnirag.core.enums import BlockType, Language, Role, SourceKind
+from omnirag.core.enums import BlockType, Language, QueryScope, Role, SourceKind
 from omnirag.core.exceptions import ProviderCapabilityError, ProviderError
 from omnirag.core.models import (
     AnswerResult,
@@ -211,6 +211,19 @@ class AnswerGenerator:
     # ------------------------------------------------------------------ #
     def _system_prompt(self, request: GenerationRequest) -> str:
         prompt = SYSTEM_PROMPT
+        if request.plan and request.plan.scope in (
+            QueryScope.EXHAUSTIVE,
+            QueryScope.MULTI_PART,
+        ):
+            prompt += """
+
+COMPREHENSIVE MODE
+- The user requested comprehensive coverage, not representative examples.
+- Enumerate every matching item supported by the numbered evidence.
+- Give each reported item its own nearby citation; do not cite one unrelated source for a whole list.
+- Preserve links explicitly supported by evidence (for example test case -> actual result -> bug ID -> severity), but never invent a relationship.
+- Do not claim the list is complete unless the retrieval evidence supports that claim.
+- If evidence appears incomplete or ambiguous, state that limitation explicitly."""
         target = request.answer_language or (
             request.plan.answer_language if request.plan else None
         )

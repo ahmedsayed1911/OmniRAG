@@ -132,6 +132,38 @@ class TestZeroConfigurationStartup:
         assert message.error
         assert "GEMINI_API_KEY" in message.content
 
+    def test_message_actions_render_and_edit_cancel_is_non_destructive(self, session_id):
+        from streamlit.testing.v1 import AppTest
+
+        from omnirag.core.enums import Role
+        from omnirag.core.models import ChatMessage
+        from omnirag.ui.state import MESSAGES_KEY, SESSION_KEY
+
+        user = ChatMessage(role=Role.USER, content="سؤال عربي\nEnglish line")
+        answer = ChatMessage(
+            role=Role.ASSISTANT,
+            content="Grounded answer [1]",
+            reply_to_message_id=user.message_id,
+        )
+        app = AppTest.from_file(str(ROOT / "app.py"))
+        app.session_state[SESSION_KEY] = session_id
+        app.session_state[MESSAGES_KEY] = [user, answer]
+
+        app.run(timeout=20)
+        assert not app.exception
+        assert [button.label for button in app.button[:3]] == [
+            "Edit",
+            "Regenerate",
+            "Regenerate",
+        ]
+
+        app.button[0].click().run(timeout=20)
+        assert app.text_area[0].value == user.content
+        assert any(button.label == "Cancel" for button in app.button)
+        next(button for button in app.button if button.label == "Cancel").click().run(timeout=20)
+        assert not app.text_area
+        assert app.session_state[MESSAGES_KEY][0].content == user.content
+
 
 class TestRepositoryHygiene:
     def test_no_env_file_is_committed(self):

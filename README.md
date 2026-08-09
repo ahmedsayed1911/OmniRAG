@@ -388,6 +388,7 @@ Other vendors (`openai`, `anthropic`, any OpenAI-compatible gateway via
 | `PAGE_RENDER_DPI` | `170` | Render resolution for scanned pages |
 | `CHUNK_SIZE` / `CHUNK_OVERLAP` | `1100` / `150` | Chunking (characters) |
 | `TOP_K` / `RERANK_TOP_K` | `24` / `8` | Candidates fetched / contexts used |
+| `EXHAUSTIVE_SCAN_MAX_CHUNKS` / `EXHAUSTIVE_FINAL_K` | `120` / `24` | Bounded full-scan threshold and broad-query context limit |
 | `RETRIEVAL_STRATEGY` | `hybrid` | `hybrid` \| `vector` \| `keyword` |
 | `QUERY_REWRITE` | `true` | LLM query expansion |
 | `MAX_UPLOAD_MB` / `MAX_FILES` | `50` / `25` | Upload limits |

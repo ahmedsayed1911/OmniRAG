@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from omnirag.config.settings import build_settings
-from omnirag.core.enums import BlockType, FileType, Language, Role, SourceKind
+from omnirag.core.enums import BlockType, FileType, Language, QueryScope, Role, SourceKind
 from omnirag.core.models import (
     ChatMessage,
     Chunk,
@@ -19,6 +19,7 @@ from omnirag.rag.generation import (
     AnswerGenerator,
     GenerationRequest,
 )
+from omnirag.rag.query_rewrite import parse_query
 
 
 def chunk(text, *, page=1, filename="report.pdf", **kwargs):
@@ -57,6 +58,26 @@ class TestPromptContract:
         assert "exactly" in lowered                 # numeric fidelity
         assert "not evidence" in lowered            # history is not evidence
         assert "language of the user's question" in lowered
+
+    def test_exhaustive_prompt_requires_every_supported_item_and_its_citation(
+        self, generator, recording_llm
+    ):
+        recording_llm.responses = ["TC03 failed [1]."]
+        plan = parse_query("List all failed test cases")
+        assert plan.scope == QueryScope.EXHAUSTIVE
+        generator.generate(
+            GenerationRequest(
+                question=plan.original,
+                retrieval=retrieval(chunk("TC03 | Status | Fail", page=2)),
+                session_id="s1",
+                plan=plan,
+            )
+        )
+
+        system = recording_llm.calls[0]["system"]
+        assert "comprehensive coverage" in system.lower()
+        assert "each reported item" in system.lower()
+        assert "never invent a relationship" in system.lower()
 
     def test_context_is_numbered_and_labelled(self, generator, recording_llm):
         recording_llm.responses = ["Revenue was 8.4M [1]."]
