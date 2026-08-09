@@ -41,7 +41,7 @@ from omnirag.intelligence.vision import VisionAnalyzer
 from omnirag.utils.language import language_name
 from omnirag.utils.hashing import short_hash
 from omnirag.utils.logging import get_logger
-from omnirag.utils.text import estimate_tokens, truncate
+from omnirag.utils.text import dedupe_preserve_order, estimate_tokens, truncate
 
 logger = get_logger(__name__)
 
@@ -120,7 +120,9 @@ class AnswerGenerator:
 
     # ------------------------------------------------------------------ #
     def generate(self, request: GenerationRequest) -> AnswerResult:
-        results = list(request.retrieval.results)
+        results = self._focused_page_results(
+            list(request.retrieval.results), request.plan
+        )
         if not results:
             return self._no_evidence_answer(request)
 
@@ -135,6 +137,17 @@ class AnswerGenerator:
         output_budget = self._output_budget(request)
         generation_id = request.generation_id or uuid.uuid4().hex
         input_token_estimate = sum(estimate_tokens(message.text) for message in messages)
+        logger.info(
+            "Generation request detected_page_filter=%s retrieved_pages=%s "
+            "context_chunks=%d estimated_input_tokens=%d "
+            "requested_output_tokens=%d selected_visuals=%d",
+            list(request.plan.page_filter) if request.plan else [],
+            sorted({item.chunk.page_number for item in results}),
+            len(results),
+            input_token_estimate,
+            output_budget,
+            len(images),
+        )
         started = time.perf_counter()
         generation_warnings: List[str] = []
 
@@ -218,6 +231,48 @@ class AnswerGenerator:
         ):
             return max(base, self.settings.llm.exhaustive_max_output_tokens)
         return base
+
+    def _focused_page_results(
+        self,
+        results: Sequence[SearchResult],
+        plan: Optional[QueryPlan],
+    ) -> List[SearchResult]:
+        """Defensively restrict and compact exact-page evidence.
+
+        Retrieval already applies the page filter. This boundary prevents an
+        older/stale index result from widening generation and merges duplicate
+        OCR/vision representations that reference the same stored page image.
+        """
+        if not plan or not plan.page_filter or plan.scope != QueryScope.FOCUSED:
+            return list(results)
+
+        allowed = set(plan.page_filter)
+        compacted: List[SearchResult] = []
+        by_visual: Dict[tuple[str, int, str], SearchResult] = {}
+        for result in results:
+            chunk = result.chunk
+            if chunk.page_number not in allowed:
+                continue
+            asset_id = chunk.visual.asset_id if chunk.visual else ""
+            if not asset_id:
+                compacted.append(result)
+                continue
+            key = (chunk.document_id, chunk.page_number, asset_id)
+            existing = by_visual.get(key)
+            if existing is None:
+                copied = result.model_copy(deep=True)
+                by_visual[key] = copied
+                compacted.append(copied)
+                continue
+            if chunk.text and chunk.text not in existing.chunk.text:
+                existing.chunk.text = (
+                    f"{existing.chunk.text}\n\n{chunk.text}".strip()
+                )
+            existing.chunk.block_ids = dedupe_preserve_order(
+                [*existing.chunk.block_ids, *chunk.block_ids]
+            )
+            existing.chunk.metadata["merged_page_representations"] = True
+        return compacted
 
     def _continue_once(
         self,
@@ -438,6 +493,8 @@ COMPREHENSIVE MODE
         seen_content: set[str] = set()
         per_page: Dict[int, int] = {}
         requested_pages = set(plan.page_filter if plan else [])
+        if requested_pages and plan and plan.scope == QueryScope.FOCUSED:
+            budget = min(budget, len(requested_pages))
         candidates = list(zip(citations, results))
         if requested_pages:
             candidates = [

@@ -13,10 +13,17 @@ from omnirag.core.exceptions import (
     ProviderPaymentRequiredError,
     ProviderPolicyError,
     ProviderTimeoutError,
+    ProviderTokenBudgetExceededError,
     ProviderUnavailableError,
     RateLimitError,
 )
-from omnirag.providers.llm.base import BaseLLMProvider, ImagePart, LLMMessage, LLMResponse
+from omnirag.providers.llm.base import (
+    BaseLLMProvider,
+    ImagePart,
+    LLMMessage,
+    LLMRequestRequirements,
+    LLMResponse,
+)
 from omnirag.providers.llm.context import llm_session
 from omnirag.providers.llm.factory import build_llm_provider, get_llm_provider
 from omnirag.providers.llm.groq import (
@@ -233,6 +240,16 @@ class TestGroqTransport:
             (FakeResponse(401, text="invalid key"), ProviderAuthError),
             (FakeResponse(404, text="model not found"), ProviderBadRequestError),
             (FakeResponse(429, text="rate limit"), RateLimitError),
+            (
+                FakeResponse(
+                    413,
+                    text=(
+                        "type=tokens code=rate_limit_exceeded Request too large "
+                        "for qwen/qwen3.6-27b TPM Limit 8000 Requested 10468"
+                    ),
+                ),
+                ProviderTokenBudgetExceededError,
+            ),
             (FakeResponse(503, text="temporarily unavailable"), ProviderUnavailableError),
             (httpx.ReadTimeout("timed out"), ProviderTimeoutError),
         ],
@@ -343,6 +360,61 @@ class TestGroqTransport:
             for record in caplog.records
         )
 
+    def test_focused_vision_413_retries_once_with_smaller_output_and_image(
+        self, groq_http
+    ):
+        calls, responses = groq_http
+        responses.extend(
+            [
+                FakeResponse(
+                    413,
+                    text=(
+                        "type=tokens code=rate_limit_exceeded Request too large "
+                        "TPM Limit 8000 Requested 8500"
+                    ),
+                ),
+                FakeResponse(
+                    200,
+                    {
+                        "model": DEFAULT_VISION_MODEL,
+                        "choices": [
+                            {
+                                "message": {"content": "focused answer"},
+                                "finish_reason": "stop",
+                            }
+                        ],
+                    },
+                ),
+            ]
+        )
+        provider = GroqLLM(
+            api_key="test-key",
+            retry_attempts=1,
+            max_output_tokens=2048,
+        )
+        messages = _messages(image=True)
+
+        response = provider.complete(
+            messages,
+            max_output_tokens=2048,
+            requirements=LLMRequestRequirements(
+                requires_images=True,
+                operation="final_answer",
+            ),
+        )
+
+        assert response.text == "focused answer"
+        assert [
+            call["json"]["max_completion_tokens"] for call in calls
+        ] == [1024, 512]
+        assert all(
+            any(
+                part.get("type") == "image_url"
+                for part in call["json"]["messages"][0]["content"]
+            )
+            for call in calls
+        )
+
 
 class TestThreeProviderRouting:
     def test_gemini_success_does_not_call_fallbacks(self):
@@ -377,6 +449,40 @@ class TestThreeProviderRouting:
         assert response.provider == "openrouter"
         assert response.text == "final fallback"
         assert response.diagnostics["fallback_position"] == 2
+
+    def test_gemini_cooldown_then_groq_413_advances_to_openrouter(self):
+        gemini = ScriptedProvider(
+            "gemini",
+            [
+                RateLimitError(
+                    "hard quota",
+                    provider="gemini",
+                    quota_exhausted=True,
+                )
+            ],
+        )
+        groq = ScriptedProvider(
+            "groq",
+            [
+                "prime cooldown state",
+                ProviderTokenBudgetExceededError(
+                    "413 TPM request too large",
+                    provider="groq",
+                ),
+            ],
+        )
+        openrouter = ScriptedProvider("openrouter", ["fallback answer"])
+        router = FallbackLLMProvider([gemini, groq, openrouter])
+
+        with llm_session("production-shaped-413"):
+            assert router.complete(_messages()).provider == "groq"
+            response = router.complete(_messages())
+
+        assert response.provider == "openrouter"
+        assert response.text == "fallback answer"
+        assert gemini.call_count == 1
+        assert groq.call_count == 2
+        assert openrouter.call_count == 1
 
     def test_payment_required_uses_next_provider_without_same_route_retry(self):
         gemini = ScriptedProvider(

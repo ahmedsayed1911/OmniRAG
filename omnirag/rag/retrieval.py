@@ -276,12 +276,18 @@ class Retriever:
         )
         result.completeness_pass = completeness_pass
         result.timings_ms = timings
+        retrieved_pages = sorted(
+            {item.chunk.page_number for item in selected}
+        )
 
         logger.info(
-            "query_scope=%s subqueries=%d candidate_count=%d unique_pages=%d "
+            "query_scope=%s detected_page_filter=%s retrieved_pages=%s "
+            "subqueries=%d candidate_count=%d unique_pages=%d "
             "structured_matches=%d final_context_chunks=%d completeness_pass=%s "
             "retrieval_ms=%.0f strategy=%s reranked=%s",
             plan.scope.value,
+            list(plan.page_filter),
+            retrieved_pages,
             len(plan.search_queries),
             len(candidates),
             result.unique_pages,

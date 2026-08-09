@@ -18,6 +18,7 @@ from omnirag.core.exceptions import (
     ProviderPolicyError,
     ProviderPaymentRequiredError,
     ProviderTimeoutError,
+    ProviderTokenBudgetExceededError,
     ProviderUnavailableError,
     RateLimitError,
 )
@@ -226,6 +227,18 @@ def raise_gateway_error(error: Dict[str, Any], *, provider: str) -> None:
     except (TypeError, ValueError):
         status = 0
 
+    if status == 413 and any(
+        marker in message.lower()
+        for marker in ("token", "tpm", "request too large", "rate_limit_exceeded")
+    ):
+        raise attach_http_context(
+            ProviderTokenBudgetExceededError(
+                f"{provider} token budget exceeded: {message}",
+                provider=provider,
+            ),
+            status,
+            message,
+        )
     if status == 429 or "rate limit" in message.lower():
         raise attach_http_context(RateLimitError(
             f"{provider} rate limited: {message}",

@@ -167,6 +167,31 @@ class ProviderBadRequestError(ProviderError):
         super().__init__(detail, user_message=user_message, provider=provider, retryable=False)
 
 
+class ProviderTokenBudgetExceededError(ProviderError):
+    """Provider-specific request/token ceiling rejected an otherwise valid call.
+
+    Retrying the identical payload is pointless, but another provider may have
+    a larger allowance. Adapters may make one smaller, evidence-preserving
+    retry before allowing the router to fail over.
+    """
+
+    default_user_message = "The AI request exceeded the provider's current token limit."
+
+    def __init__(
+        self,
+        detail: str = "",
+        *,
+        user_message: Optional[str] = None,
+        provider: str = "",
+    ) -> None:
+        super().__init__(
+            detail,
+            user_message=user_message,
+            provider=provider,
+            retryable=False,
+        )
+
+
 class ProviderPaymentRequiredError(ProviderError):
     """402 — the selected provider route requires credits."""
 

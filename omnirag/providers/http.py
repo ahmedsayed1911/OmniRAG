@@ -17,6 +17,7 @@ from omnirag.core.exceptions import (
     ProviderError,
     ProviderPaymentRequiredError,
     ProviderTimeoutError,
+    ProviderTokenBudgetExceededError,
     ProviderUnavailableError,
     RateLimitError,
 )
@@ -144,6 +145,15 @@ def _handle_response(response: Any, *, provider: str) -> Dict[str, Any]:
             status,
             body,
         )
+    if status == 413 and _is_token_budget_error(body):
+        raise attach_http_context(
+            ProviderTokenBudgetExceededError(
+                f"{provider} token budget exceeded: {body}",
+                provider=provider,
+            ),
+            status,
+            body,
+        )
     if status >= 500:
         raise attach_http_context(ProviderUnavailableError(
             f"{provider} server error {status}: {body}",
@@ -243,6 +253,21 @@ def _quota_scope(body: str, *, exhausted: bool, reset: str) -> str:
     if exhausted:
         return "hard_quota"
     return "temporary_rate"
+
+
+def _is_token_budget_error(body: str) -> bool:
+    lowered = (body or "").lower()
+    markers = (
+        "type=tokens",
+        '"type":"tokens"',
+        '"type": "tokens"',
+        "rate_limit_exceeded",
+        "tpm limit",
+        "token limit",
+        "request too large",
+        "requested tokens",
+    )
+    return any(marker in lowered for marker in markers)
 
 
 def _safe_body(response: Any, limit: int = 400) -> str:

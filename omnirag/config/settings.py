@@ -138,7 +138,8 @@ class LLMSettings:
     hard_quota_cooldown_seconds: float = 3600.0
     groq_max_rate_limit_wait_seconds: float = 20.0
     groq_tpm_limit: int = 8000
-    groq_estimated_image_tokens: int = 1024
+    groq_estimated_image_tokens: int = 2048
+    groq_focused_vision_max_output_tokens: int = 1024
 
     @property
     def effective_vision_model(self) -> str:
@@ -632,7 +633,10 @@ def _build_llm_settings() -> LLMSettings:
         ),
         groq_tpm_limit=_get_int("GROQ_TPM_LIMIT", 8000),
         groq_estimated_image_tokens=_get_int(
-            "GROQ_ESTIMATED_IMAGE_TOKENS", 1024
+            "GROQ_ESTIMATED_IMAGE_TOKENS", 2048
+        ),
+        groq_focused_vision_max_output_tokens=_get_int(
+            "GROQ_FOCUSED_VISION_MAX_OUTPUT_TOKENS", 1024
         ),
     )
 

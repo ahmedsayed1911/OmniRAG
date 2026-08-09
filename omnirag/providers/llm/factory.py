@@ -53,6 +53,7 @@ def _signature(cfg: LLMSettings) -> str:
         str(cfg.groq_max_rate_limit_wait_seconds),
         str(cfg.groq_tpm_limit),
         str(cfg.groq_estimated_image_tokens),
+        str(cfg.groq_focused_vision_max_output_tokens),
     ]
     parts.extend(
         ":".join(
@@ -105,6 +106,9 @@ def build_endpoint_provider(
             max_rate_limit_wait_seconds=cfg.groq_max_rate_limit_wait_seconds,
             tpm_limit=cfg.groq_tpm_limit,
             estimated_image_tokens=cfg.groq_estimated_image_tokens,
+            focused_vision_max_output_tokens=(
+                cfg.groq_focused_vision_max_output_tokens
+            ),
             **common,
         )
     if provider == "openrouter":

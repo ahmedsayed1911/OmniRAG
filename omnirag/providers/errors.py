@@ -28,6 +28,7 @@ from omnirag.core.exceptions import (
     ProviderError,
     ProviderPolicyError,
     ProviderPaymentRequiredError,
+    ProviderTokenBudgetExceededError,
     ProviderTimeoutError,
     ProviderUnavailableError,
     RateLimitError,
@@ -49,6 +50,7 @@ RECOVERABLE_TYPES: Tuple[type, ...] = (
     RateLimitError,
     ProviderTimeoutError,
     ProviderUnavailableError,
+    ProviderTokenBudgetExceededError,
 )
 
 
@@ -63,6 +65,8 @@ def classify(exc: BaseException) -> FailureClass:
     if isinstance(exc, ProviderPaymentRequiredError):
         # Another configured provider (or OpenRouter's free route) may serve
         # the same valid request without requiring credits.
+        return FailureClass.RECOVERABLE
+    if isinstance(exc, ProviderTokenBudgetExceededError):
         return FailureClass.RECOVERABLE
     if isinstance(exc, ProviderBadRequestError):
         return FailureClass.BAD_REQUEST
@@ -91,6 +95,8 @@ def should_retry_same_provider(exc: BaseException) -> bool:
     if isinstance(exc, RateLimitError) and exc.quota_exhausted:
         return False
     if isinstance(exc, ProviderPaymentRequiredError):
+        return False
+    if isinstance(exc, ProviderTokenBudgetExceededError):
         return False
     return classify(exc) is FailureClass.RECOVERABLE
 

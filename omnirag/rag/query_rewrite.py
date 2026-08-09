@@ -37,7 +37,7 @@ logger = get_logger(__name__)
 
 # "page 17", "p. 17", "pages 3-5", "slide 4", "الصفحة ١٧", "صفحة 17", "شريحة 4"
 _NUMBER = r"[0-9٠-٩]{1,4}"
-_PAGE_LABEL = r"(?:pages?|pg\.?|p\.|slides?|الصفحة|الصفحه|صفحة|صفحه|الصفحات|صفحات|الشريحة|الشريحه|شريحة|شريحه)"
+_PAGE_LABEL = r"(?:pages?|pg\.?|p\.|slides?|بيدج|بيج|الصفحة|الصفحه|صفحة|صفحه|الصفحات|صفحات|الشريحة|الشريحه|شريحة|شريحه)"
 _PAGE_RANGE = re.compile(
     rf"{_PAGE_LABEL}\s*[:\-]?\s*({_NUMBER})\s*(?:-|–|—|to|إلى|الى)\s*({_NUMBER})",
     re.I,
@@ -114,7 +114,7 @@ Rules:
 - Produce 2-3 alternative phrasings that use different wording for the same information need.
 - ALWAYS include one translation of the query (Arabic query -> English variant, English query -> Arabic variant), because the documents may be in a different language than the question.
 - Keep proper nouns, numbers, codes and units unchanged in every variant.
-- Output a single JSON object: {"queries": ["...", "..."]}"""
+- Output one rewritten query per line, with no bullets, numbering, JSON or prose."""
 
 
 @dataclass
@@ -281,7 +281,10 @@ def expand_with_llm(
                 system=SYSTEM_PROMPT,
                 temperature=0.0,
                 max_output_tokens=max_output_tokens,
-                json_mode=True,
+                # Groq's gpt-oss route can reject response_format=json_object
+                # with json_validate_failed. Rewriting is optional, so use the
+                # portable plain-text contract and keep tolerant JSON parsing.
+                json_mode=False,
             )
     except ProviderError as exc:
         logger.info("Query expansion skipped: %s", exc)
@@ -309,10 +312,13 @@ def _parse_queries(raw: str) -> List[str]:
         payload = match.group(0)
     try:
         data = json.loads(payload)
+        items = data.get("queries") if isinstance(data, dict) else data
     except json.JSONDecodeError:
-        return []
-
-    items = data.get("queries") if isinstance(data, dict) else data
+        items = [
+            re.sub(r"^\s*(?:[-*•]|\d+[.)])\s*", "", line).strip()
+            for line in payload.splitlines()
+            if line.strip()
+        ]
     if not isinstance(items, list):
         return []
     out: List[str] = []

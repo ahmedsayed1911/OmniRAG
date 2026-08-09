@@ -19,6 +19,7 @@ from omnirag.providers.llm.base import (
     BaseLLMProvider,
     ImagePart,
     LLMMessage,
+    LLMRequestRequirements,
     LLMResponse,
 )
 from omnirag.providers.llm.groq import DEFAULT_VISION_MODEL, GroqLLM
@@ -85,6 +86,8 @@ def test_production_default_operation_budgets(monkeypatch):
     assert settings.llm.max_output_tokens == 2048
     assert settings.llm.exhaustive_max_output_tokens == 4096
     assert settings.llm.groq_max_rate_limit_wait_seconds == 20
+    assert settings.llm.groq_estimated_image_tokens == 2048
+    assert settings.llm.groq_focused_vision_max_output_tokens == 1024
 
 
 def test_scanned_pdf_ingestion_makes_zero_vision_calls(
@@ -193,7 +196,65 @@ def test_page_three_visual_analysis_is_cached_across_generator_rebuilds(
     assert vision_calls[0]["max_output_tokens"] == 800
     assert len(final_calls) == 2
     assert all(call["max_output_tokens"] == 2048 for call in final_calls)
+    assert all(call["images"] == 1 for call in [*vision_calls, *final_calls])
     assert vision.cache_hits == 1
+
+
+def test_focused_page_compaction_keeps_evidence_and_drops_unrelated_pages(
+    settings, file_store, sample_png
+):
+    llm = CountingVisionLLM()
+    asset = file_store.put("session", sample_png, media_type="image/png")
+    visual = VisualRef(
+        asset_id=asset.asset_id,
+        media_type="image/png",
+        origin="page_render",
+        page_number=3,
+    )
+    first = Chunk(
+        document_id="doc",
+        session_id="session",
+        filename="scan.pdf",
+        page_number=3,
+        block_ids=["vision"],
+        block_type=BlockType.PAGE_SNAPSHOT,
+        source_kind=SourceKind.VISION,
+        text="Visual description of the coordination diagram.",
+        visual=visual,
+    )
+    duplicate = first.model_copy(
+        update={
+            "chunk_id": "ocr-copy",
+            "block_ids": ["ocr"],
+            "text": "OCR labels: salary processing and bank information.",
+        }
+    )
+    unrelated = first.model_copy(
+        update={
+            "chunk_id": "page-four",
+            "page_number": 4,
+            "page_label": "Page 4",
+            "block_ids": ["page-four"],
+            "text": "Unrelated Page 4 evidence.",
+        }
+    )
+    generator = AnswerGenerator(llm, file_store=file_store, settings=settings)
+    plan = parse_query("اشرح بيدج 3")
+
+    compacted = generator._focused_page_results(
+        [
+            SearchResult(chunk=first, rank=0),
+            SearchResult(chunk=duplicate, rank=1),
+            SearchResult(chunk=unrelated, rank=2),
+        ],
+        plan,
+    )
+
+    assert len(compacted) == 1
+    assert compacted[0].chunk.page_number == 3
+    assert "coordination diagram" in compacted[0].chunk.text
+    assert "salary processing" in compacted[0].chunk.text
+    assert compacted[0].chunk.block_ids == ["vision", "ocr"]
 
 
 def test_standalone_vision_ocr_obeys_1200_token_ceiling(sample_png):
@@ -243,6 +304,49 @@ def test_groq_tpm_preflight_caps_output_without_dropping_evidence(monkeypatch):
 
     assert captured["messages"] is messages
     assert 128 <= captured["max_output_tokens"] < 900
+
+
+def test_focused_groq_page_vision_stays_below_tpm_and_preserves_image(monkeypatch):
+    captured = {}
+
+    def fake_complete(self, messages, **kwargs):
+        captured.update(kwargs)
+        captured["messages"] = messages
+        return LLMResponse(text="ok", model=self.vision_model, provider="groq")
+
+    monkeypatch.setattr(
+        "omnirag.providers.llm.openai_compat.OpenAICompatibleLLM.complete",
+        fake_complete,
+    )
+    provider = GroqLLM(
+        api_key="not-sent",
+        max_output_tokens=2048,
+        tpm_limit=8000,
+        estimated_image_tokens=2048,
+        focused_vision_max_output_tokens=1024,
+    )
+    image = ImagePart(data=b"page-three-image", media_type="image/png")
+    messages = [
+        LLMMessage(
+            text="Only the compact Page 3 evidence and citation identity.",
+            images=[image],
+        )
+    ]
+
+    response = provider.complete(
+        messages,
+        max_output_tokens=2048,
+        requirements=LLMRequestRequirements(
+            requires_images=True,
+            operation="final_answer",
+        ),
+    )
+
+    assert captured["messages"] is messages
+    assert captured["messages"][0].images == [image]
+    assert captured["max_output_tokens"] == 1024
+    assert response.diagnostics["selected_visuals"] == 1
+    assert response.diagnostics["estimated_total_tokens"] < 8000
 
 
 def test_groq_retry_after_waits_once_when_within_bound(monkeypatch):

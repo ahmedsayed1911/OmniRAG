@@ -456,8 +456,10 @@ class TestMultimodalAttachment:
             session_id="s1",
             plan=parse_query("Explain the diagram on Page 3"),
         ))
-        assert recording_llm.calls[0]["images"] == 2
-        assert result.used_images == 2
+        # Exact-page focused requests send the preferred full-page visual only;
+        # duplicate/crop representations remain textual context.
+        assert recording_llm.calls[0]["images"] == 1
+        assert result.used_images == 1
 
     def test_missing_asset_does_not_break_the_answer(self, generator, recording_llm):
         recording_llm.responses = ["Answer [1]"]

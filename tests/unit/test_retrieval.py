@@ -10,7 +10,7 @@ from omnirag.core.models import Chunk, SearchResult
 from omnirag.providers.rerank.base import RerankCandidate
 from omnirag.providers.rerank.heuristic import HeuristicReranker
 from omnirag.rag.hybrid import build_bm25_index, reciprocal_rank_fusion
-from omnirag.rag.query_rewrite import parse_query
+from omnirag.rag.query_rewrite import expand_with_llm, parse_query
 from omnirag.rag.retrieval import RetrievalRequest, Retriever
 from omnirag.rag.vector_store import InMemoryVectorStore
 
@@ -172,6 +172,56 @@ class TestRetrieverPipeline:
         assert retriever.llm.calls == 0
         assert any("Skipped LLM query rewrite" in note for note in result.notes)
 
+    def test_production_arabic_page_query_is_strictly_page_three(
+        self, session_id, fake_embeddings
+    ):
+        class RewriteSpy:
+            calls = 0
+
+            def complete(self, *args, **kwargs):
+                self.calls += 1
+                raise AssertionError("deterministic page query must not be rewritten")
+
+        class ModelReranker:
+            is_model_based = True
+            calls = 0
+
+            def rerank(self, *args, **kwargs):
+                self.calls += 1
+                raise AssertionError("deterministic page query must not use LLM reranking")
+
+        store = InMemoryVectorStore()
+        chunks = [
+            make_chunk(
+                session_id,
+                f"Image on page {page}.",
+                page=page,
+                block_type=BlockType.PAGE_SNAPSHOT,
+            )
+            for page in range(1, 9)
+        ]
+        store.upsert(
+            session_id,
+            chunks,
+            fake_embeddings.embed_documents([chunk.text for chunk in chunks]),
+        )
+        retriever = build_retriever(store, fake_embeddings, query_rewrite=True)
+        retriever.llm = RewriteSpy()
+        retriever.reranker = ModelReranker()
+
+        result = retriever.retrieve(
+            RetrievalRequest(
+                query="اشرحلي الرسومات الموجودة ف بيدج 3",
+                session_id=session_id,
+            )
+        )
+
+        assert retriever.llm.calls == 0
+        assert retriever.reranker.calls == 0
+        assert result.unique_pages == 1
+        assert [item.chunk.page_number for item in result.results] == [3]
+        assert result.candidate_count == 1
+
     def test_page_filtered_candidates_avoid_model_reranker(self, session_id, fake_embeddings):
         class ModelReranker:
             is_model_based = True
@@ -279,6 +329,10 @@ class TestQueryParsing:
         ("اشرح الصفحة ٢٣", [23]),
         ("اشرح الصفحة الثالثة", [3]),
         ("قارن صفحات 3 و4", [3, 4]),
+        ("اشرحلي الرسومات الموجودة ف بيدج 3", [3]),
+        ("اشرحلي الرسومات الموجودة ف بيج 3", [3]),
+        ("قارن بيدج 3 و4", [3, 4]),
+        ("قارن بيج 3 و 4", [3, 4]),
         ("Tell me about revenue", []),
     ])
     def test_page_intent_extraction(self, query, pages):
@@ -335,3 +389,39 @@ class TestQueryParsing:
         original = "What was the exact revenue figure for Q4 2024?"
         plan = parse_query(original)
         assert plan.normalized == original
+
+    def test_plain_text_query_rewrite_avoids_structured_output(self):
+        class PlainRewriteLLM:
+            json_modes = []
+
+            def complete(self, *args, **kwargs):
+                self.json_modes.append(kwargs.get("json_mode"))
+                from omnirag.providers.llm.base import LLMResponse
+
+                return LLMResponse(
+                    text="quarterly revenue chart\nمخطط الإيرادات ربع السنوية"
+                )
+
+        llm = PlainRewriteLLM()
+        plan = expand_with_llm(parse_query("Explain the revenue chart"), llm)
+
+        assert llm.json_modes == [False]
+        assert "quarterly revenue chart" in plan.expansions
+        assert "مخطط الإيرادات ربع السنوية" in plan.expansions
+
+    def test_query_rewrite_json_validation_failure_degrades_safely(self):
+        from omnirag.core.exceptions import ProviderBadRequestError
+
+        class BrokenRewriteLLM:
+            def complete(self, *args, **kwargs):
+                raise ProviderBadRequestError(
+                    "json_validate_failed",
+                    provider="groq",
+                )
+
+        plan = expand_with_llm(
+            parse_query("Explain revenue trends"), BrokenRewriteLLM()
+        )
+
+        assert plan.search_queries == ["Explain revenue trends"]
+        assert any("unavailable" in note.lower() for note in plan.notes)

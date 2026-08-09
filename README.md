@@ -392,6 +392,7 @@ fallback variables remain supported.
 | `PROVIDER_HARD_QUOTA_COOLDOWN_SECONDS` | `3600` | Session-scoped cooldown when a provider reports exhausted account/daily quota without a reset time |
 | `GROQ_MAX_RATE_LIMIT_WAIT_SECONDS` | `20` | Wait once for a Groq `Retry-After` at or below this bound; otherwise fail over immediately |
 | `GROQ_TPM_LIMIT` | `8000` | Conservative per-request TPM preflight ceiling |
+| `GROQ_FOCUSED_VISION_MAX_OUTPUT_TOKENS` | `1024` | Focused multimodal Groq completion ceiling; required images remain attached |
 | `VISION_MODEL` | = LLM model | Model used for visual analysis |
 | `LLM_TEMPERATURE` | `0.1` | Generation temperature |
 | `LLM_MAX_OUTPUT_TOKENS` | `2048` | Focused-answer output budget |
