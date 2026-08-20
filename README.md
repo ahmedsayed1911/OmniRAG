@@ -1,5 +1,9 @@
 # OmniRAG
 
+[![CI](https://github.com/ahmedsayed1911/OmniRAG/actions/workflows/ci.yml/badge.svg)](https://github.com/ahmedsayed1911/OmniRAG/actions/workflows/ci.yml)
+[![python](https://img.shields.io/badge/python-3.10%20%7C%203.12-blue)](pyproject.toml)
+[![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 **Universal Multimodal Document Intelligence & RAG Platform**
 
 Upload any document — a PDF, a scan, a Word file, a slide deck, a photo of a

@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONIOENCODING: utf-8
+
+jobs:
+  test:
+    name: Test (Python ${{ matrix.python-version }}, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      # The suite is provider-agnostic: every external call is stubbed, so
+      # no API keys or running Qdrant instance are required here.
+      - name: Run tests
+        run: pytest -q
+
+      - name: Import smoke test
+        shell: bash
+        run: |
+          python -c "import omnirag; print('omnirag', omnirag.__version__)"
+          python -c "from omnirag.config.settings import LLMSettings; print('settings import ok')"
+          python -c "from omnirag.providers.llm import AnthropicLLM; print('providers import ok')"
